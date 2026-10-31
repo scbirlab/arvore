@@ -99,7 +99,7 @@ def main() -> None:
                 required=True,
                 type=str,
             ),
-            config_opt.replace({
+            config_opt.replace(**{
                 "required": False, 
                 "default": None,
             }),
