@@ -52,7 +52,10 @@ dependencies = [
 [project.optional-dependencies]
 chem = ["schemist>=0.0.6"]
 bio = ["vectome>=0.0.7"]
-dev = ["duvidnn[chem,bio]", "pytest>=7.4", "flake8"]
+xgb = ["xgboost_cpu"]
+xgb_cuda12 = ["xgboost-cu12"]
+xgb_cuda13 = ["xgboost"]
+dev = ["duvidnn[chem,bio,xgb]", "pytest>=7.4", "flake8"]
 
 [project.urls]
 "Homepage" = "https://github.com/scbirlab/treeton"
