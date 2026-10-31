@@ -1,10 +1,10 @@
 [project]
-name = "duvidnn"
-version = "0.0.6"
+name = "treeton"
+version = "0.0. "
 authors = [
   { name="Eachan Johnson", email="eachan.johnson@crick.ac.uk" },
 ]
-description = "Deep learning with uncertainty for general purpose, chemistry, and taxonomic tasks."
+description = "Tree learning infrastructure."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -35,44 +35,36 @@ classifiers = [
 ]
 
 dependencies = [
-  "aspect-data[torch]>=0.0.6",
+  "aspect-data>=0.0.6",
   "carabiner-tools[pd,mpl]>=0.0.5.post3",
   "datasets>=3.5.0",
   "dill>=0.3.9",
-  "duvida[torch]>=0.0.4",
   "filelock",
   "huggingface_hub",
   "jsonargparse>=4.40",
   "numpy",
   "platformdirs>=4.4.0",
-  "torch>=2.4,<=2.9",
-  "torchmetrics",
-  "torchvision",
-  "lightning",
+  "scikit-learn>=1.7",
   "scipy",
-  "tensorboard",
   "tqdm",
 ]
 
 [project.optional-dependencies]
-transformers = ["torch>=2.4,<=2.9", "torchvision", "transformers"]
-chem = ["chemprop>=2.1.0", "schemist>=0.0.6", "scikit-learn>=1.7"]
+chem = ["schemist>=0.0.6"]
 bio = ["vectome>=0.0.7"]
-splits = ["umap-learn", "scipy", "schemist>=0.0.6", "tdigest>=0.5", "faiss-cpu>=1.11"]
-splits_gpu = ["umap-learn", "scipy", "schemist>=0.0.6", "tdigest>=0.5", "faiss-gpu"]
-dev = ["duvidnn[chem,bio,splits,transformers]", "pytest>=7.4", "flake8"]
+dev = ["duvidnn[chem,bio]", "pytest>=7.4", "flake8"]
 
 [project.urls]
-"Homepage" = "https://github.com/scbirlab/duvidnn"
-"Bug Tracker" = "https://github.com/scbirlab/duvidnn/issues"
+"Homepage" = "https://github.com/scbirlab/treeton"
+"Bug Tracker" = "https://github.com/scbirlab/treeton/issues"
 
 [project.scripts] 
-duvidnn = "duvidnn.cli.cli:main"
+duvidnn = "treeton.cli.cli:main"
 
 [tool.setuptools]
 # If there are data files included in your packages that need to be
 # installed, specify them here.
-package-data = {"duvidnn" = [
+package-data = {"treeton" = [
   "data/*.json",
   "data/models/*.json"
 ]}

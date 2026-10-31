@@ -17,6 +17,7 @@ Hello.txt
 /test/*.csv
 /test/*.png
 /test/outputs/
+
 /test/scripts/outputs/
 __pycache__/
 lightning_logs/
