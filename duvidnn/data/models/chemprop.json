@@ -1,9 +1,0 @@
-{
-  "class_path": "duvidnn.models.ChempropEncoder",
-  "init_args": {
-    "out_features": 1,
-    "mp_hidden_dim": 300,
-    "mp_depth": 3,
-    "hidden_dims": [300]
-  }
-}
