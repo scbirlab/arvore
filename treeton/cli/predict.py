@@ -29,7 +29,11 @@ def _predict(args: Namespace) -> None:
     )
     config = apply_overrides(config, args.set)
 
-    resolved = DataResolver(args.data).select_rows(args.start, args.stop)
+    if args.data is not None:
+        resolved = (
+            DataResolver(args.data)
+            .select_rows(args.start, args.stop)
+        )
 
     result = box.predict(
         resolved.data,
