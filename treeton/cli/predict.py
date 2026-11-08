@@ -4,23 +4,19 @@ from argparse import Namespace
 
 from carabiner.cliutils import clicommand
 
-from ..box import Box
-from ..checkpoint_utils import load_json
-from ..config import (
-    apply_overrides,
-    instantiate_uncertainty,
-)
-from .io import save_dataset
+from ..box import Box, DEFAULT_BATCH_SIZE
+from ..config import apply_overrides
 
 
 @clicommand(message="Predicting")
 def _predict(args: Namespace) -> None:
 
+    from providence.io import load_json
+
     box = Box.load(
         args.checkpoint,
         cache_dir=args.cache,
     )
-
     config = (
         load_json(args.config)
         if args.config is not None
@@ -28,23 +24,12 @@ def _predict(args: Namespace) -> None:
     )
     config = apply_overrides(config, args.set)
 
-    uncertainty = instantiate_uncertainty(
-        config.get("uncertainty")
-    )
-
     result = box.predict(
         args.data,
         batch_size=config.get(
             "batch_size",
-            32,
-        ),
-        uncertainty=uncertainty,
-        device=config.get(
-            "device"
+            DEFAULT_BATCH_SIZE,
         ),
     )
-
-    save_dataset(
-        result,
-        args.output,
-    )
+    resolved = DataResolver(result, cache_dir=args.cache_dir)
+    resolved.save(args.output)

@@ -1,4 +1,4 @@
-"""Command-line interface for duvidnn."""
+"""Command-line interface for treeton."""
 
 from carabiner.cliutils import (
     CLIApp,
@@ -123,9 +123,8 @@ def main() -> None:
         app_name,
         version=__version__,
         description=(
-            "Train, checkpoint, predict, "
-            "and quantify uncertainty for "
-            "PyTorch models."
+            "Train, checkpoint, and predict using "
+            "tree-based estimators."
         ),
         commands=[
             train,

@@ -1,17 +1,11 @@
 """Interpret declarative PyTorch model specifications."""
 
 from typing import TYPE_CHECKING, Any
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from copy import deepcopy
 from importlib.resources import files
 import json
 from pathlib import Path
-
-if TYPE_CHECKING:
-    from torch.nn import Module
-    from .training import Trainer
-else:
-    Module = Any
-    Trainer = Any
 
 
 def resolve_class(
@@ -28,101 +22,25 @@ def resolve_class(
     )
 
 def instantiate_object(
-    config: Mapping[str, Any]
+    config: Mapping[str, Any],
+    class_key: str = "class_path",
+    init_key: str = "init_args"
 ):
     """Instantiate one class_path/init_args object."""
 
     config = dict(config)
-    class_path = config["class_path"]
-    init_args = dict(config.get("init_args", {}))
-
+    class_path = config[class_key]
+    init_args = dict(config.get(init_key, {}))
     cls = resolve_class(class_path)
     return cls(**init_args)
 
 
-def instantiate_model(
-    config: Mapping[str, Any]
-) -> Module:
-    """Instantiate an nn.Module from a class_path/init_args specification.
-
-    """
-    from jsonargparse import ArgumentParser
-    from torch import nn
-
-    parser = ArgumentParser()
-    parser.add_subclass_arguments(
-        nn.Module,
-        "model",
-    )
-    parsed = parser.parse_object({
-        "model": dict(config),
-    })
-    instantiated = parser.instantiate(parsed)
-    return instantiated.model
-
-
-def instantiate_trainer(
-    config: Mapping[str, Any],
-) -> Trainer:
-    """Instantiate a Trainer from declarative configuration."""
-
-    from .training import Trainer
-
-    config = dict(config)
-
-    loss_config = config.pop("loss")
-    if isinstance(loss_config, Mapping):
-        loss = instantiate_object(loss_config)
-    else:
-        loss = loss_config
-
-    new_kwargs = {}
-    optimizer = config.pop("optimizer", None)
-    if isinstance(optimizer, str):
-        new_kwargs["optimizer"] = resolve_class(optimizer)
-
-    scheduler = config.pop("scheduler", None)
-    if isinstance(scheduler, str):
-        new_kwargs["scheduler"] = resolve_class(scheduler)
-
-    regularizer = config.pop("regularizer", None)
-    if isinstance(regularizer, Mapping):
-        new_kwargs["regularizer"] = instantiate_object(regularizer)
-    elif isinstance(regularizer, (list, tuple)):
-        _regularizer = []
-        for item in regularizer:
-            if isinstance(item, Mapping):
-                item = instantiate_object(item)
-            _regularizer.append(item)
-        new_kwargs["regularizer"] = _regularizer
-             
-    kwargs = {
-        "loss": loss,
-        **config,
-    } | new_kwargs
-
-    return Trainer(**kwargs)
-
-
-def instantiate_uncertainty(config):
-    if config is None:
-        return None
-
-    return {
-        name: instantiate_object(method)
-        for name, method
-        in config.items()
-    }
-
-
 def _deep_update(
-    base: Mapping[str, Any],
-    update: Mapping[str, Any],
-) -> dict[str, Any]:
+    base: Mapping[str, ...],
+    update: Mapping[str, ...],
+) -> dict[str, ...]:
     """Recursively overlay one configuration mapping onto another."""
-
     out = dict(base)
-
     for key, value in update.items():
         if (
             key in out
@@ -135,7 +53,6 @@ def _deep_update(
             )
         else:
             out[key] = value
-
     return out
 
 
@@ -143,7 +60,6 @@ def _parse_override_value(
     value: str,
 ):
     """Parse a CLI override using JSON semantics, falling back to string."""
-
     try:
         return json.loads(value)
     except json.JSONDecodeError:
@@ -151,13 +67,11 @@ def _parse_override_value(
 
 
 def apply_overrides(
-    config: Mapping[str, Any],
-    overrides: list[str] | tuple[str, ...] | None = None,
-) -> dict[str, Any]:
+    config: Mapping[str, ...],
+    overrides: Iterable[str, ...] | None = None,
+) -> dict[str, ...]:
     """Apply dotted-path CLI overrides to configuration."""
-
-    out = dict(config)
-
+    result = deepcopy(dict(config))
     for override in overrides or ():
         try:
             path, raw_value = override.split(
@@ -178,24 +92,17 @@ def apply_overrides(
                 f"Invalid config override path {path!r}."
             )
 
-        cursor = out
-
+        cursor = result
         for key in keys[:-1]:
-            existing = cursor.get(key)
-
-            if existing is None:
+            if key not in cursor:
                 cursor[key] = {}
-            elif not isinstance(existing, Mapping):
+            elif not isinstance(cursor[key], Mapping):
                 raise ValueError(
                     f"Cannot override {path!r}: "
                     f"{key!r} is not a mapping."
                 )
-
             cursor = cursor[key]
-
-        cursor[keys[-1]] = _parse_override_value(
-            raw_value
-        )
+        cursor[keys[-1]] = _parse_override_value(raw_value)
 
     return out
 
@@ -203,7 +110,7 @@ def apply_overrides(
 def model_aliases() -> tuple[str, ...]:
     """Return bundled model configuration aliases."""
 
-    model_dir = files("duvidnn").joinpath(
+    model_dir = files("treeton").joinpath(
         "data",
         "models",
     )
@@ -223,7 +130,7 @@ def load_model_alias(
     """Load a bundled model configuration."""
 
     path = (
-        files("duvidnn")
+        files("treeton")
         .joinpath(
             "data",
             "models",
@@ -232,26 +139,20 @@ def load_model_alias(
     )
 
     if not path.is_file():
-        available = ", ".join(
-            model_aliases()
-        )
-
+        available = ", ".join(model_aliases())
         raise ValueError(
             f"Unknown model alias {name!r}. "
             f"Available aliases: {available}"
         )
-
-    return json.loads(
-        path.read_text()
-    )
+    return json.loads(path.read_text())
 
 
 def resolve_experiment_config(
-    config: Mapping[str, Any],
+    config: Mapping[str, ...],
     *,
     model: str | None = None,
     overrides: list[str] | tuple[str, ...] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, ...]:
     """Resolve model aliases and CLI overrides into one experiment config."""
 
     resolved = dict(config)

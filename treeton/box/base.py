@@ -1,54 +1,33 @@
-"""Checkpointable composition of data processing and PyTorch models."""
+"""Checkpointable, reproducible composition of data processing and tree estimator."""
 
 from typing import Any, TypeAlias
 from collections.abc import Callable, Mapping, Iterable
 from copy import deepcopy
 from pathlib import Path
+from providence.checkpoint_utils import save_json, load_json
 import json
 import os
 
-from aspect.data import DataPipeline
 from carabiner import print_err
-import torch
-from torch import nn
-from torchmetrics import Metric, MetricCollection
 
 from ..config import instantiate_model
-from ..checkpoint_utils import save_json, load_json
-from ..invoke import (
-    DuvidaModel,
-    ModelInvoker,
-    TrainingDerivatives,
-)
-from ..invoke.duvida import DEFAULT_APPROXIMATOR
-from ..mapping import ColumnMap
-from ..training import Trainer
-from ..utils.device import move_to_device
-from ..uncertainty import normalize_uncertainty
-
+from ..metrics import DEFAULT_METRICS, METRICS_REGISTRY
 
 CONFIG_FILENAME = "config.json"
-WEIGHTS_FILENAME = "weights.pt"
-MODEL_FILENAME = "model.pt"
-PIPELINE_DIRNAME: str = "data"
-DEFAULT_BATCH_SIZE: int = 32
+DEFAULT_BATCH_SIZE: int = 1024
 DEFAULT_PREDICTION_COLUMN: str = "prediction"
-TRAINING_DERIVATIVES_FILENAME: str = "training_derivatives.pt"
-
-PipelineLike: TypeAlias = DataPipeline | Mapping[str, Any] | str | Callable
 
 
 def _json_copy(
-    value: Mapping[Any, Any],
+    value: Mapping[Any, ...],
 ) -> dict[str, ...]:
     """Return a JSON-native copy, validating serializability."""
-    return json.loads(
-        json.dumps(value)
-    )
+    return json.loads(json.dumps(value))
 
 
 def _resolve_pipeline(pipeline: PipelineLike | None = None) -> DataPipeline:
     """Resolve a pipeline specification."""
+    from aspect.data import DataPipeline
     if isinstance(pipeline, DataPipeline):
         return pipeline
 
@@ -80,172 +59,196 @@ def _resolve_pipeline(pipeline: PipelineLike | None = None) -> DataPipeline:
     )
 
 
-def _materialize_model(module: nn.Module) -> None:
-    """Build modules before state restoration.
-
-    Applies mainly to in-package models.
-
-    """
-    if hasattr(module, "_built"):
-        if getattr(module, "_built") is False:
-            build = getattr(module, "build")
-            if callable(build):
-                build()
-
-    for child in module.children():
-        _materialize_model(child)
-
-
-def _model_device(model: nn.Module):
-    try:
-        return next(model.parameters()).device
-    except StopIteration:
-        try:
-            return next(model.buffers()).device
-        except StopIteration:
-            return torch.device("cpu")
-
-
-def _predict_map_batch(
-    batch: Mapping[str, Any],
-    *,
-    box,
-    pipeline: DataPipeline,
-    device,
-    uncertainty,
-    uncertainty_state: Mapping[str, Any],
-    prediction_column: str = DEFAULT_PREDICTION_COLUMN
-) -> dict[str, ...]:
-    runtime_batch = pipeline.collate(batch)
-    runtime_batch = move_to_device(runtime_batch, device)
-    inputs = box.invoker.inputs(runtime_batch)
-
-    with torch.inference_mode():
-        prediction = box.model(**inputs)
-    result = {
-        prediction_column: (
-            prediction
-            .detach()
-            .cpu()
-            .numpy()
-        )
-    }
-    for name, method in uncertainty.items():
-        value = method(
-            box=box,
-            batch=runtime_batch,
-            prediction=prediction,
-            state=uncertainty_state[name],
-        )
-        result[name] = (
-            value
-            .detach()
-            .cpu()
-            .numpy()
-        )
-    return result
+def _resolve_metrics(
+    metrics: Iterable[str | Callable] | Mapping[str, str | Callable] | None = None
+):
+    if metrics is None:
+        metrics = DEFAULT_METRICS
+    if isinstance(metrics, (tuple, list)):
+        new_metrics = {}
+        for m in metrics:
+            if callable(m):
+                _m = str(m.__class__.__name__)
+            elif isinstance(m, str):
+                _m = m
+            else:
+                raise TypeError(f"Metrics must be callable or str, but was {type(m)}: {m}")
+            new_metrics[_m] = m
+    _metrics = {}
+    for k, v in metrics.items():
+        if isinstance(v, str):
+            _v = METRICS_REGISTRY.get(v)
+        elif callable(v):
+            _v = v
+        else:
+            raise TypeError(
+                f"Metrics must be callable or supported str, but was {type(v)}: {v}\n"
+                f"Supported: {METRICS_REGISTRY}"
+            ) 
+        _metrics[k] = _v
+    return _metrics
 
 
+def _col_names(dataset: Dataset | IterableDataset | Mapping) -> list[str]:
+    from datasets import Dataset, IterableDataset
+    if isinstance(dataset, (Dataset, IterableDataset)):
+        return dataset.column_names
+    elif isinstance(dataset, Mapping):
+        return list(dataset)
+    else:
+        raise ValueError(f"Can't get column names for {type(dataset)}: {dataset}")
+    
 
-def _load_training_derivatives(
-    path: Path,
-    map_location,
-) -> TrainingDerivatives | None:
-    filename = path / TRAINING_DERIVATIVES_FILENAME
+def _data_len(dataset: Dataset | IterableDataset | Mapping) -> int:
+    from datasets import Dataset, IterableDataset
+    if isinstance(dataset, Dataset):
+        return len(dataset)
+    elif isinstance(dataset, IterableDataset):
+        for i in enumerate(dataset):
+            pass
+        return i
+    elif isinstance(dataset, Mapping):
+        lens = {k: len(v) for k, v in dataset.items()}
+        if len(set(lens.values())) == 1:
+            return next(lens.values())
+        else:
+            raise AttributeError(
+                f"Column lengths of Mapping are inconsistent: {lens}"
+            )
+    else:
+        raise ValueError(f"Can't get number of rows for {type(dataset)}: {dataset}")
 
-    if not filename.exists():
-        return None
 
-    state = torch.load(
-        filename,
-        map_location=map_location,
-        weights_only=True,
+def get_transformed_column(
+    column: str, 
+    dataset: Dataset | IterableDataset | Mapping, 
+    pipeline: DataPipeline
+) -> str:
+    transforms = pipeline.column_transforms.get(column, ())
+    column_names = _col_names(dataset)
+    if len(transforms) > 0:
+        generated_column = transforms[-1].output_column
+        if generated_column in column_names:
+            return generated_column
+    if column in column_names:
+        return column
+    raise KeyError(
+        f"Column or Aspect transform {column} unavailable. "
+        f"Available columns: {column_names}"
     )
 
-    return TrainingDerivatives.from_state_dict(state)
 
-
-def _validate_training_derivatives(
-    model: nn.Module,
-    derivatives: TrainingDerivatives | None,
-) -> None:
-    if derivatives is None:
-        return
-
-    parameters = dict(model.named_parameters())
-
-    for label, tree in (
-        ("fisher_score", derivatives.fisher_score),
-        ("fisher_information", derivatives.fisher_information),
-    ):
-        if tree is None:
-            continue
-
-        if set(tree) != set(parameters):
-            raise ValueError(
-                f"Cached {label} parameter keys "
-                "do not match the restored model."
+def _matrix(
+    dataset: Dataset | Mapping, 
+    pipeline: DataPipeline,
+    column_groups: Iterable[Iterable[str]]
+):
+    import numpy as np
+    if len(dataset) == 0:
+        raise ValueError(f"No rows in dataset: {dataset}")
+    blocks = ()
+    for col_group in column_groups:
+        group_blocks = []
+        for feature in col_group:
+            column_name = get_transformed_column(
+                feature, 
+                dataset, 
+                pipeline,
             )
-        for name, value in tree.items():
-            if value.shape != parameters[name].shape:
-                raise ValueError(
-                    f"Cached {label} shape for "
-                    f"{name!r} is {value.shape}, "
-                    "but model parameter shape is "
-                    f"{parameters[name].shape}."
-                )
+            try:
+                values = np.asarray(dataset[column_name])
+                if values.dtype == object:
+                    values = np.stack(list(dataset[column_name]))
+                values = values.reshape(_data_len(dataset), -1)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"Feature {feature!r} is not a regular array") from error
+            if not np.issubdtype(values.dtype, np.number):
+                raise TypeError(f"Feature {feature!r} must be numeric, got {values.dtype}")
+            group_blocks.append(values)
+        np.concatenate(group_blocks, axis=1)
+        blocks += (group_blocks,)
+    return blocks
+    
+
+def _predict_map_batch(
+    batch: Mapping[str, ...],
+    *,
+    model,
+    column_groups: Iterable[Iterable[str]],
+    pipeline: DataPipeline,
+    prediction_column: str = DEFAULT_PREDICTION_COLUMN
+) -> dict[str, ...]:
+    feature_cols, target_cols = column_groups
+    x = _matrix(batch, pipeline, column_groups=feature_cols)
+    predicted = np.asarray(model.predict(x))
+    predicted = {
+        f"{prediction_column}:{target}": p
+        for target, p in zip(target_cols, predicted.T)
+    }
+    return result | predicted
 
 
 class Box:
-    """Data processing, model invocation, and optional training.
+    """Data processing, and model training.
 
     A Box constructed with :meth:`from_config` retains the declarative model
-    specification used to construct its PyTorch module. Such Boxes are saved
-    as configuration plus a ``state_dict``.
+    specification used to construct its model.
 
-    A Box constructed directly from an arbitrary existing ``nn.Module`` has
+    A Box constructed directly from an arbitrary existing model has
     no generic reconstruction recipe. Such Boxes remain supported and fall
-    back to whole-model PyTorch serialization.
+    back to whole-model serialization.
 
     """
 
+    SCHEMA_VERSION: int = 1
+
     def __init__(
         self,
-        model: nn.Module,
-        input_map: ColumnMap,
-        pipeline: PipelineLike | None = None,
+        model: Estimator,
+        features: str | Iterable[str],
+        target: str | Iterable[str],
+        pipeline: PipelineLike | os.PathLike | str | None = None,
         # TODO: Make type hints more specific
-        data: Any | None = None,
-        trainer: Trainer | None = None,
-        model_config: Mapping[str, Any] | None = None,
-        training_derivatives: TrainingDerivatives | None = None,
+        data: DataLike | None = None,
+        model_config: Mapping[str, ...] | None = None
     ):
+        if isinstance(features, str):
+            features = (features,)
+        if isinstance(target, str):
+            target = (target,)
+        features, target = tuple(features), tuple(target)
+        if len(features) == 0:
+            raise ValueError("features must be a nonempty list of column names")
+        if len(target) == 0:
+            raise ValueError("features must be a nonempty list of column names")
+        if not all(isinstance(f, str) and f for f in features):
+            raise ValueError("features must contain nonempty strings")
+        if not all(isinstance(f, str) and f for f in target):
+            raise ValueError("target must be a nonempty column name")
+        if not (
+            callable(getattr(model, "fit", None)) 
+            and callable(getattr(model, "predict", None))
+        ):
+            raise TypeError("model must implement .fit(X, y) and .predict(X) methods")
+        
         self.pipeline = _resolve_pipeline(pipeline)
         self.model = model
-        self.input_map = input_map
+        self.features = features
         self.data = data
-        self.trainer = trainer
 
         self.model_config = (
             _json_copy(model_config)
             if model_config is not None
             else None
         )
-        self.invoker = ModelInvoker(
-            model=self.model,
-            input_map=self.input_map,
-        )
-        self.training_derivatives = training_derivatives
+        self._validation_score = None
 
 
     @property
     def training_data_source(self):
         """Recorded provenance for the training data."""
-        return getattr(
-            self.pipeline,
-            "data_source",
-            None,
-        )
+        return getattr(self.pipeline.data, "data_source", None)
+
     def verify_training_data_source(self) -> bool | None:
         """Verify the original training-data source when possible."""
         source = self.training_data_source
@@ -256,14 +259,15 @@ class Box:
     @classmethod
     def from_config(
         cls,
-        config: Mapping[str, Any] | str,
+        config: Mapping[str, ...] | os.PathLike | str,
         *,
         cache_dir: str | None = None
     ) -> "Box":
         """Construct a Box from JSON-compatible configuration."""
-        if isinstance(config, str):
+        from aspect.data import DataPipeline
+        if isinstance(config, (str, Path)):
             if os.path.exists(config):
-                config = load_json(config)
+                config = load_json(str(config))
             else:
                 raise FileNotFoundError(
                     "`config` was string, but filename "
@@ -285,13 +289,6 @@ class Box:
                 "saved whole-model checkpoint. Received {config=}."
             )
 
-        try:
-            input_map_config = config["input_map"]
-        except KeyError as error:
-            raise ValueError(
-                f"Box config requires an 'input_map'. Received {config=}."
-            ) from error
-
         model_config = _json_copy(model_config)
         model = instantiate_model(model_config)
         
@@ -304,13 +301,18 @@ class Box:
         )
         return cls(
             model=model,
-            input_map=input_map,
+            features=config.get("features", []),
+            target=config.get("target", []),
             pipeline=pipeline,
             model_config=model_config,
         )
 
-    def to_config(self, filename: str | None = None) -> dict[str, ...]:
+    def to_config(
+        self, 
+        path: str | os.PathLike | None = None
+    ) -> dict[str, ...]:
         """Return the durable JSON configuration for this Box."""
+        from aspect.data import DataPipeline
         if not isinstance(self.pipeline, DataPipeline):
             raise TypeError(
                 "Checkpoint serialization currently requires "
@@ -320,18 +322,20 @@ class Box:
             )
 
         config = {
-            "model": (
-                _json_copy(
-                    self.model_config
-                )
+            "schema_version": self.SCHEMA_VERSION,
+            "model_config": (
+                _json_copy(self.model_config)
                 if self.model_config is not None
                 else None
             ),
             "pipeline": self.pipeline.to_config(),
-            "input_map": self.input_map.to_config(),
+            "features": list(self.features),
+            "target": list(self.target),
         }
-        if filename is not None:
-            save_json(config, filename)
+        if path is not None:
+            path = Path(path)
+            path.mkdir(parents=True, exist_ok=True)
+            save_json(config, path)
         return config
 
     def save(
@@ -342,139 +346,100 @@ class Box:
         """Save configuration and model state."""
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
+
+        must_pickle = hasattr(self.model, "save")
+        manifest = {
+            "schema_version": self.SCHEMA_VERSION,
+            "config": self.to_config(),
+            "artefacts": {
+                "model_text": "model.json" if not must_pickle else None,
+                "model_binary": "model.joblib" if must_pickle else None,
+                "training_data": "training-data.as",
+            }
+        }
         
         config = self.to_config()
-        pipeline_config = config.pop("pipeline")
-
         save_json(config, path / CONFIG_FILENAME)
 
         self.pipeline.save(
-            path / PIPELINE_DIRNAME,
+            path / manifest["artefacts"]["training_data"],
             **pipeline_kwargs,
         )
-
-        if self.model_config is None:
-            torch.save(
-                self.model,
-                path / MODEL_FILENAME,
+        if must_pickle:
+            joblib.dump(
+                self.model, 
+                path / manifest["artefacts"]["model_binary"],
             )
         else:
-            _materialize_model(self.model)
-            torch.save(
-                self.model.state_dict(),
-                path / WEIGHTS_FILENAME,
+            self.model.save(
+                path / manifest["artefacts"]["model_text"],
             )
-        derivatives_path = path / TRAINING_DERIVATIVES_FILENAME
-        if self.training_derivatives is not None:
-            torch.save(
-                self.training_derivatives.state_dict(),
-                derivatives_path,
-            )
-        elif derivatives_path.exists():
-            derivatives_path.unlink()
-
-    
 
     @classmethod
     def load(
         cls,
         path: str | os.PathLike,
         *,
-        map_location: Any = "cpu",
         cache_dir: str | None = None
     ) -> "Box":
         """Restore a Box checkpoint."""
+        from aspect.data import DataPipeline
         path = Path(path)
         config = load_json(path / CONFIG_FILENAME)
 
-        input_map = ColumnMap.from_config(config.get("input_map"))
+        model_config = config["config"].get("model_config")
+        features = config["config"]["features"]
+        target = config["config"]["target"]
+
         pipeline = DataPipeline.load(
-            path / PIPELINE_DIRNAME,
+            path / config["artefacts"]["training_data"],
             cache_dir=cache_dir,
         )
-        pipeline_config = pipeline.to_config()
-        config["pipeline"] = pipeline_config
+        model_filename = config["artefacts"].get("model_text")
+        from_pickle = model is None
 
-        model_config = config.get("model")
-        training_derivatives = _load_training_derivatives(
-            path,
-            map_location,
-        )
+        if from_pickle:
+            model_filename = config["artefacts"].get("model_binary")
         
-        if model_config is not None:
-            model = instantiate_model(model_config)
-            _materialize_model(model)
-            state_dict = torch.load(
-                path / WEIGHTS_FILENAME,
-                map_location=map_location,
-                weights_only=True,
-            )
-            model.load_state_dict(state_dict)
-            _validate_training_derivatives(
-                model,
-                training_derivatives,
-            )
-            return cls(
-                model=model,
-                input_map=input_map,
-                pipeline=pipeline,
-                model_config=model_config,
-                training_derivatives=training_derivatives,
-            )
-
-        model = torch.load(
-            path / MODEL_FILENAME,
-            map_location=map_location,
-            weights_only=False,
-        )
-        _validate_training_derivatives(
-            model,
-            training_derivatives,
-        )
+        if from_pickle:
+            model = joblib.load(model_filename)
+        else:
+            if model_config is not None:
+                model = instantiate_model(model_config)
+                _materialize_model(model)
+                model = model.load(model_filename)
         return cls(
             model=model,
-            input_map=input_map,
             pipeline=pipeline,
-            training_derivatives=training_derivatives,
+            features=features,
+            target=target,
+            model_config=model_config,
         )
 
-    def prepare(self, data):
-        """Apply the recorded Aspect pipeline."""
-        return self.pipeline(data)
-
-    def predict_batch(
-        self,
-        batch,
-    ):
-        """Predict from an already prepared runtime batch."""
-        return self.invoker.predict(batch)
-
-    def supervised_batch(
-        self,
-        batch,
-    ):
-        """Return predictions and target from an already prepared batch."""
-        return self.invoker.supervised(batch)
-
-    def _training_data(self):
+    def featurize(self, data, *, training: bool = False):
+        """Apply the DataPipeline."""
         if not isinstance(self.pipeline, DataPipeline):
             raise TypeError(
-                "Training data requires an "
-                "aspect.DataPipeline."
+                "Box.featurize() requires an "
+                f"aspect.DataPipeline. Found {self.pipeline}"
             )
+        pipeline = self.pipeline if training else self.pipeline.clone()
+        return self._unwrap(pipeline(data)), pipeline
 
-        if self.pipeline.data_out is not None:
-            return self.pipeline.data_out
+    @staticmethod
+    def _unwrap(data):
+        from providence import DataResolver
+        return data.data if isinstance(data, DataResolver) else data
 
-        if self.pipeline.data_in is not None:
-            pipeline = self.pipeline.clone()
-
-            return pipeline(self.pipeline.data_in)
-
-        raise ValueError(
-            "Training data require retained "
-            "training data or enough source provenance "
-            "to reconstruct them."
+    def _matrix(
+        self, 
+        dataset: Dataset, 
+        pipeline: DataPipeline
+    ):
+        return _matrix(
+            dataset=dataset,
+            pipeline=pipeline,
+            column_groups=(self.features, self.target),
         )
 
     def fit(
@@ -482,349 +447,120 @@ class Box:
         data,
         *,
         validation=None,
-        batch_size: int = DEFAULT_BATCH_SIZE,
-        validation_batch_size: int | None = None,
-        dataloader_kwargs: Mapping[str, Any] | None = None,
-        validation_dataloader_kwargs: Mapping[str, Any] | None = None
+        skip_eval: bool = False,
+        metrics: Iterable[str | Callable] | Mapping[str, str | Callable] | None = None,
+        **kwargs
     ):
         """Fit the model using raw training and optional validation and test data."""
+        from aspect.data import DataPipeline
 
-        if self.trainer is None:
-            raise ValueError(
-                "Box.fit() requires a trainer."
-            )
-
-        if not isinstance(self.pipeline, DataPipeline):
-            raise TypeError(
-                "Box.fit() requires an "
-                "aspect.DataPipeline."
-            )
-
-        dataloader_kwargs = dict(dataloader_kwargs or {})
-        train_data = self.pipeline(data)
-        train_loader = self.pipeline.dataloader(
-            train_data,
-            batch_size=batch_size,
-            shuffle=True,
-            **dataloader_kwargs,
+        training_data, pipeline = self.featurize(data, training=True)
+        train_args = (
+            self._matrix(training_data, self.features, pipeline),
+            self._matrix(training_data, self.target, pipeline),
         )
-
-        val_loader = None
+            
         if validation is not None:
-            validation_pipeline = self.pipeline.clone()
-            validation_data = validation_pipeline(validation)
-
-            validation_kwargs = dict(
-                validation_dataloader_kwargs
-                or dataloader_kwargs
-            )
-
-            val_loader = (
-                validation_pipeline.dataloader(
-                    validation_data,
-                    batch_size=(
-                        validation_batch_size
-                        or batch_size
-                    ),
-                    shuffle=False,
-                    **validation_kwargs,
+            val_data, val_pipeline = self.featurize(validation, training=False)
+            val_kwargs = {
+                "eval": tuple(
+                     *self._matrix(val_data, pipeline),
                 )
-            )
+            }
         else:
-            val_loader = None
-        self.training_derivatives = None
-        self.trainer.fit(
-            model=self.model,
-            invoker=self.invoker,
-            train_dataloader=train_loader,
-            val_dataloader=val_loader,
+            val_kwargs = {}
+        self.model.fit(
+            *self._matrix(training_data, pipeline),
+            **val_kwargs,
+            **kwargs
         )
         return self
+
+    def _pre_predict(
+        self,
+        data=None,
+        pipeline: PipelineLike | None = None
+    ):
+        from aspect.data import DataPipeline
+
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be positive ({batch_size})")
+        map_kwargs = dict(map_kwargs or {})
+        prepared = None
+        if data is None:  # use training data
+            data = self.pipeline.data_in.data
+            if not self.pipeline.data_out is None:
+                prepared = self.pipeline.data_out.data
+        if prepared is None:
+            prepared, pipeline = self.featurize(data, training=False)
+        else:
+            pipeline = self.pipeline.clone()
+        return prepared.with_format(None), pipeline
 
     def predict(
         self,
         data=None,
-        pipeline: Mapping[str, Any] | DataPipeline | None = None,
-        batch_size: int = DEFAULT_BATCH_SIZE,
+        pipeline: PipelineLike | None = None,
         prediction_column: str = DEFAULT_PREDICTION_COLUMN,
-        uncertainty=None,
-        device=None,
-        map_kwargs: Mapping[str, Any] | None = None
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        map_kwargs: Mapping[str, ...] | None = None
     ):
         """Predict over a dataset in bounded-memory batches."""
-
-        map_kwargs = dict(map_kwargs or {})
-
-        if pipeline is None:
-            ref_pipeline = self.pipeline
-        elif isinstance(pipeline, Mapping):
-            ref_pipeline = DataPipeline(column_transforms=pipeline)
-        elif not isinstance(pipeline, DataPipeline):
-            raise ValueError(
-                "If provided, `pipeline` must be a dict or aspect.DataPipeline "
-                f"but was {type(pipeline)}: {pipeline}"
-            )
-
-        if not isinstance(ref_pipeline, DataPipeline):
-            raise TypeError(
-                "Box.predict() requires an "
-                "aspect.DataPipeline."
-            )
-
-        if device is None:
-            device = _model_device(self.model)
-        else:
-            device = torch.device(device)
-            self.model.to(device)
-
-        pipeline = ref_pipeline.clone()
-        prepared = None
-        if data is None:  # use training data
-            prepared = self._training_data()
-        if prepared is None:
-            prepared = pipeline(data)
-
-        self.model.eval()
-
-        uncertainty = normalize_uncertainty(uncertainty)
-        for method in uncertainty.values():
-            prepare_candidates = getattr(
-                method,
-                "prepare_candidates",
-                None,
-            )
-            if prepare_candidates is not None:
-                prepared = prepare_candidates(prepared)
-
-        uncertainty_state = {
-            name: method.prepare(
-                self,
-                batch_size=batch_size,
-                device=device,
-            )
-            for name, method
-            in uncertainty.items()
-        }
-
-        for column in (
-            prediction_column,
-            *uncertainty,
-        ):
-            if column in prepared.column_names:
-                prepared = prepared.remove_columns(column)
-
+        prepared, pipeline = _pre_predict(
+            data=data,
+            pipeline=pipeline
+        )
         return prepared.map(
             _predict_map_batch,
             batched=True,
             batch_size=batch_size,
             fn_kwargs={
-                "box": self,
+                "model": self.model,
                 "pipeline": pipeline,
                 "prediction_column": prediction_column,
-                "uncertainty": uncertainty,
-                "uncertainty_state": uncertainty_state,
-                "device": device,
+                "column_groups": (self.features, self.target),
             },
             desc="Predicting",
             **map_kwargs,
         )
 
-    def compute_training_derivatives(
-        self,
-        *,
-        fisher_score: bool = False,
-        fisher_information: Mapping[str, Any] | str | None = None,
-        loss: Callable | None = None,
-        loss_inputs: Mapping[str, str] | None = None,
-        loss_reduction: str = "mean",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-        device=None,
-        dataloader_kwargs: Mapping[str, Any] | None = None,
-    ):
-        """Compute optional training-set derivatives for downstream UQ."""
-
-        if (
-            not fisher_score
-            and fisher_information is None
-        ):
-            return self
-
-        if loss is None:
-            if self.trainer is None:
-                raise ValueError(
-                    "No loss was supplied and this Box "
-                    "does not retain a Trainer. Pass `loss=` "
-                    "explicitly."
-                )
-
-            loss = self.trainer.loss
-
-            if loss_inputs is None:
-                loss_inputs = self.trainer.loss_inputs
-
-        data = self._training_data()
-
-        if device is None:
-            device = _model_device(self.model)
-        else:
-            device = torch.device(device)
-            self.model.to(device)
-
-        dataloader_kwargs = dict(
-            dataloader_kwargs or {}
-        )
-
-        def make_loader():
-            return self.pipeline.dataloader(
-                data,
-                batch_size=batch_size,
-                shuffle=False,
-                **dataloader_kwargs,
-            )
-
-        def prepare_batch(batch):
-            return move_to_device(batch, device)
-
-        functional = DuvidaModel(
-            self.model,
-            self.invoker,
-        )
-
-        self.model.eval()
-
-        if self.training_derivatives is None:
-            self.training_derivatives = TrainingDerivatives()
-
-        if fisher_score:
-            score, n_samples = functional.accumulate_fisher_score(
-                make_loader(),
-                loss,
-                loss_inputs=loss_inputs,
-                loss_reduction=loss_reduction,
-                prepare_batch=prepare_batch,
-            )
-            self.training_derivatives.fisher_score = score
-            self.training_derivatives.n_samples = n_samples
-            self.training_derivatives.loss_reduction = loss_reduction
-
-        if fisher_information is not None:
-            if isinstance(
-                fisher_information,
-                str,
-            ):
-                fisher_information = {
-                    "approximator": fisher_information,
-                }
-            else:
-                fisher_information = dict(fisher_information)
-
-            approximator = fisher_information.pop("approximator", DEFAULT_APPROXIMATOR)
-
-            information, n_samples = (
-                functional.accumulate_fisher_information(
-                    make_loader(),
-                    loss,
-                    loss_inputs=loss_inputs,
-                    loss_reduction=loss_reduction,
-                    approximator=approximator,
-                    prepare_batch=prepare_batch,
-                    **fisher_information,
-                )
-            )
-
-            self.training_derivatives.fisher_information = information
-            self.training_derivatives.fisher_information_config = {
-                "approximator": approximator,
-                **fisher_information,
-            }
-            self.training_derivatives.n_samples = n_samples
-            self.training_derivatives.loss_reduction = loss_reduction
-
-        return self
-
     def evaluate(
         self,
-        data,
-        metrics: Mapping[str, Metric] | Iterable[Metric],
+        data=None,
         *,
-        pipeline: Mapping[str, Any] | DataPipeline | None = None,
-        batch_size: int = DEFAULT_BATCH_SIZE,
-        device=None,
-        metric_mask: Callable[[Mapping], torch.Tensor] | None = None,
-        dataloader_kwargs: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        metrics: Iterable[str | Callable] | Mapping[str, str | Callable] | None = None,
+        metric_mask: Callable[[Mapping], ...] | None = None,
+        **kwargs
+    ) -> dict[str, ...]:
         """Evaluate the model over a dataset using streaming metrics."""
+        metrics = _resolve_metrics(metrics)
 
-        if pipeline is None:
-            pipeline = self.pipeline.clone()
-        elif isinstance(pipeline, Mapping):
-            pipeline = DataPipeline(
-                column_transforms=pipeline,
-            )
-        elif isinstance(pipeline, DataPipeline):
-            pipeline = pipeline.clone()
-        else:
-            raise TypeError(
-                "`pipeline` must be a mapping, "
-                f"DataPipeline, or None, but was {type(pipeline)}: {pipeline}."
-            )
-
-        prepared = pipeline(data)
-
-        dataloader = pipeline.dataloader(
-            prepared,
-            batch_size=batch_size,
-            shuffle=False,
-            **dict(dataloader_kwargs or {}),
+        prepared, pipeline = _pre_predict(
+            data=data,
+            pipeline=pipeline
         )
-
-        if isinstance(metrics, Mapping):
-            metrics = dict(metrics)
-        else:
-            metrics = {
-                metric.__class__.__name__: metric
-                for metric in metrics
-            }
-
-        collection = MetricCollection(deepcopy(metrics))
-
-        if device is None:
-            device = _model_device(self.model)
-
-        collection = collection.to(device)
-
-        was_training = self.model.training
-        self.model.eval()
-
-        try:
-            with torch.inference_mode():
-                for batch in dataloader:
-                    batch = move_to_device(
-                        batch,
-                        device,
-                    )
-                    prediction, target = (
-                        self.invoker
-                        .supervised(batch)
-                    )
-                    if metric_mask is not None:
-                        mask = metric_mask(batch)
-
-                        prediction = prediction[mask]
-                        target = target[mask]
-                        if prediction.numel() == 0:
-                            continue
-
-                    collection.update(prediction, target)
-        finally:
-            self.model.train(was_training)
-
-        return {
-            name: (
-                value.detach().cpu().item()
-                if value.numel() == 1
-                else value.detach().cpu()
+        if mask is not None and callable(mask):
+            prepared = prepared.filter(
+                mask, 
+                **({"desc": "Masking" if isinstance(prepared, Dataset) else {}}),
             )
-            for name, value
-            in collection.compute().items()
+        predicted = prepared.map(
+            _predict_map_batch,
+            batched=True,
+            batch_size=batch_size,
+            fn_kwargs={
+                "model": self.model,
+                "pipeline": pipeline,
+                "prediction_column": prediction_column,
+                "column_groups": (self.features, self.target),
+            },
+            desc="Predicting",
+            **map_kwargs,
+        )
+        predicted_cols = [col for col in predicted.column_names if col.startswith(prediction_column)]
+        return predicted, {
+            key: metric(
+                _matrix(prepared, pipeline, predicted_cols),
+                _matrix(prepared, pipeline, self.target),
+            ) for key, metric in metrics.items()
         }
