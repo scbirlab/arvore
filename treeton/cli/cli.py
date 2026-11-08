@@ -53,7 +53,6 @@ def main() -> None:
         "train",
         description="Train a model from configuration.",
         options=[
-            config_opt,
             input_name,
             CLIOption(
                 "--validation",
@@ -62,6 +61,7 @@ def main() -> None:
                 type=str,
                 help="Validation dataset",
             ),
+            config_opt,
             CLIOption(
                 "--model",
                 "-m",
@@ -97,7 +97,7 @@ def main() -> None:
             "Predict from a Box checkpoint."
         ),
         options=[
-            ,
+            input_name,
             pipeline_opt,
             CLIOption(
                 "--data",

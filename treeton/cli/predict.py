@@ -12,6 +12,7 @@ from ..config import apply_overrides
 def _predict(args: Namespace) -> None:
 
     from providence.io import load_json
+    from providence import DataResolver
 
     box = Box.load(
         args.checkpoint,

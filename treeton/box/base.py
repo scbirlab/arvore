@@ -1,17 +1,25 @@
 """Checkpointable, reproducible composition of data processing and tree estimator."""
 
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 from collections.abc import Callable, Mapping, Iterable
 from copy import deepcopy
 from pathlib import Path
-from providence.checkpoint_utils import save_json, load_json
 import json
 import os
 
 from carabiner import print_err
+from providence.io import save_json, load_json
 
-from ..config import instantiate_model
+if TYPE_CHECKING:
+    from aspect import DataPipeline
+    from datasets import Dataset, IterableDataset
+else:
+    DataPipeline = Any
+    Dataset, IterableDataset = Any, Any
+
+from ..config import instantiate_object
 from ..metrics import DEFAULT_METRICS, METRICS_REGISTRY
+from ..typing import Estimator, DataLike, PipelineLike
 
 CONFIG_FILENAME = "config.json"
 DEFAULT_BATCH_SIZE: int = 1024
@@ -178,6 +186,7 @@ def _predict_map_batch(
     pipeline: DataPipeline,
     prediction_column: str = DEFAULT_PREDICTION_COLUMN
 ) -> dict[str, ...]:
+    import numpy as np
     feature_cols, target_cols = column_groups
     x = _matrix(batch, pipeline, column_groups=feature_cols)
     predicted = np.asarray(model.predict(x))
@@ -185,7 +194,7 @@ def _predict_map_batch(
         f"{prediction_column}:{target}": p
         for target, p in zip(target_cols, predicted.T)
     }
-    return result | predicted
+    return batch | predicted
 
 
 class Box:
@@ -290,9 +299,7 @@ class Box:
             )
 
         model_config = _json_copy(model_config)
-        model = instantiate_model(model_config)
-        
-        input_map = ColumnMap.from_config(input_map_config)
+        model = instantiate_object(model_config)
 
         pipeline_config = config.get("pipeline", {})
         pipeline = DataPipeline.from_config(
@@ -366,6 +373,7 @@ class Box:
             **pipeline_kwargs,
         )
         if must_pickle:
+            import joblib
             joblib.dump(
                 self.model, 
                 path / manifest["artefacts"]["model_binary"],
@@ -396,17 +404,17 @@ class Box:
             cache_dir=cache_dir,
         )
         model_filename = config["artefacts"].get("model_text")
-        from_pickle = model is None
+        from_pickle = model_config is None
 
         if from_pickle:
             model_filename = config["artefacts"].get("model_binary")
         
         if from_pickle:
+            import joblib
             model = joblib.load(model_filename)
         else:
             if model_config is not None:
-                model = instantiate_model(model_config)
-                _materialize_model(model)
+                model = instantiate_object(model_config)
                 model = model.load(model_filename)
         return cls(
             model=model,
@@ -483,9 +491,6 @@ class Box:
     ):
         from aspect.data import DataPipeline
 
-        if batch_size < 1:
-            raise ValueError(f"batch_size must be positive ({batch_size})")
-        map_kwargs = dict(map_kwargs or {})
         prepared = None
         if data is None:  # use training data
             data = self.pipeline.data_in.data
@@ -506,7 +511,10 @@ class Box:
         map_kwargs: Mapping[str, ...] | None = None
     ):
         """Predict over a dataset in bounded-memory batches."""
-        prepared, pipeline = _pre_predict(
+        map_kwargs = dict(map_kwargs or {})
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be positive ({batch_size})")
+        prepared, pipeline = self._pre_predict(
             data=data,
             pipeline=pipeline
         )
@@ -527,21 +535,26 @@ class Box:
     def evaluate(
         self,
         data=None,
+        pipeline: PipelineLike | None = None,
         *,
         metrics: Iterable[str | Callable] | Mapping[str, str | Callable] | None = None,
         metric_mask: Callable[[Mapping], ...] | None = None,
+        prediction_column: str = DEFAULT_PREDICTION_COLUMN,
+        batch_size: int = DEFAULT_BATCH_SIZE,
         **kwargs
     ) -> dict[str, ...]:
         """Evaluate the model over a dataset using streaming metrics."""
+        from datasets import Dataset
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be positive ({batch_size})")
         metrics = _resolve_metrics(metrics)
-
-        prepared, pipeline = _pre_predict(
+        prepared, pipeline = self._pre_predict(
             data=data,
             pipeline=pipeline
         )
-        if mask is not None and callable(mask):
+        if metric_mask is not None and callable(metric_mask):
             prepared = prepared.filter(
-                mask, 
+                metric_mask, 
                 **({"desc": "Masking" if isinstance(prepared, Dataset) else {}}),
             )
         predicted = prepared.map(
@@ -555,9 +568,12 @@ class Box:
                 "column_groups": (self.features, self.target),
             },
             desc="Predicting",
-            **map_kwargs,
+            **kwargs,
         )
-        predicted_cols = [col for col in predicted.column_names if col.startswith(prediction_column)]
+        predicted_cols = [
+            col for col in predicted.column_names 
+            if col.startswith(prediction_column)
+        ]
         return predicted, {
             key: metric(
                 _matrix(prepared, pipeline, predicted_cols),

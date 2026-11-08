@@ -104,7 +104,7 @@ def apply_overrides(
             cursor = cursor[key]
         cursor[keys[-1]] = _parse_override_value(raw_value)
 
-    return out
+    return result
 
 
 def model_aliases() -> tuple[str, ...]:
