@@ -2,69 +2,59 @@
 
 set -euox pipefail
 
-TRAIN="hf://scbirlab/thomas-2018-spark-wt@Acinetobacter-baumannii:train"
-TEST="hf://scbirlab/thomas-2018-spark-wt@Acinetobacter-baumannii:validation"
+TRAIN="hf://scbirlab/thomas-2018-spark-wt~Acinetobacter-baumannii:train"
+TEST="hf://scbirlab/thomas-2018-spark-wt~Acinetobacter-baumannii:validation"
 LLM="transformer://scbirlab/lchemme-base-zinc22-lteq300:clean_smiles~mean"
 
 script_dir=$(readlink -f $(dirname "$0"))
 OUTPUT_DIR=$(readlink -f "$script_dir"/..)/outputs/hash-fp
 CACHE="$OUTPUT_DIR/cache"
 OUTPUT="$OUTPUT_DIR/models"
-HYPERPARAMS="$OUTPUT_DIR"/hyperopt.json
+CONFIG="$OUTPUT_DIR/config.json"
 
 START=50
 STOP=550
 
+mkdir -p "$(dirname "$CONFIG")"
+
 printf \
-    '{"n_units": [8, 16], "n_hidden": [4, 6], "residual_depth": [null, 2]}' \
-| duvidnn hyperprep \
-    -o "$HYPERPARAMS"
+'{
+    "box": {
+        "model": {
+            "class_path": "sklearn.ensemble.RandomForestRegressor",
+            "init_args": {
+                "n_estimators": 20,
+                "random_state": 42
+            }
+        },
+        "pipeline": {
+            "column_transforms": {
+                "fp": ["smiles", "morgan-fingerprint"],
+                "mic_method_hash": ["mic_method", "hash"],
+                "mic_ineq_operator_hash": ["mic_ineq_operator", "hash"]
+            }
+        },
+        "features": ["fp", "mic_method_hash", "mic_ineq_operator_hash"],
+        "target": "pmic"
+    }
+}' \
+> "$CONFIG"
 
-class=bilinear-fp
-for i in 0 1
-do
-    XDG_CACHE_HOME="$CACHE" HF_HOME="$CACHE" duvidnn train \
-        -1 "$TEST" \
-        -2 "$TRAIN" \
-        -x clogp \
-        --x2 full_strain_name:vectome-fingerprint \
-        --context mic_method:hash \
-        -S smiles \
-        -y pmic \
-        -c "$HYPERPARAMS" \
-        -k "$class" \
-        -i $i \
-        --save-data \
-        --output "$OUTPUT/$class-$i" \
-        --cache "$CACHE" \
-        --epochs 2 \
-        -z 10 \
-        --learning-rate 0.001
-    ls -lah "$OUTPUT"
-    ls -lah "$OUTPUT"/"$class-$i"/*
-    outfile="$OUTPUT_DIR"/predictions/"$class-$i.csv"
-    XDG_CACHE_HOME="$CACHE" HF_HOME="$CACHE" duvidnn predict \
-        --test "$TRAIN" \
-        --checkpoint "$OUTPUT"/"$class-$i" \
-        --start $START \
-        --end $STOP \
-        --variance \
-        --doubtscore \
-        --approx exact_diagonal \
-        --information-sensitivity \
-        --last-layer \
-        --tanimoto \
-        -y pmic \
-        --cache "$CACHE" \
-        --output "$outfile"
-    output_nlines=$(cat "$outfile" | wc -l)
-    if [ ! "$output_nlines" -eq "$(( $STOP - $START + 1 ))" ]
-    then
-        echo "Predictions have wrong number of rows: $output_nlines"
-        exit 1
-    else
-        head -n50 "$outfile" | tr , $'\t'
-    fi
-done
+HF_HOME="$CACHE" \
+treeton train \
+    "$TEST" \
+    -2 "$TRAIN" \
+    --config "$CONFIG" \
+    --checkpoint "$OUTPUT/model.tt" \
+    --cache "$CACHE"
 
-rm -r "$CACHE"
+HF_HOME="$CACHE" \
+treeton predict \
+    "$OUTPUT/model.tt" \
+    --data "$TRAIN" \
+    --start "$START" \
+    --stop "$STOP" \
+    --checkpoint "$OUTPUT/pred.pv" \
+    --output "$OUTPUT/pred.csv" \
+    --cache "$CACHE"
+ 

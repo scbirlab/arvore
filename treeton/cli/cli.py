@@ -69,6 +69,23 @@ def main() -> None:
         help="Cache directory for data loading and preprocessing.",
     )
 
+    start = CLIOption(
+        "--start",
+        default=None,
+        type=int,
+        help=(
+            "For chunking, where to start predicting."
+        ),
+    )
+    stop = CLIOption(
+        "--stop",
+        default=None,
+        type=int,
+        help=(
+            "For chunking, where to stop predicting."
+        ),
+    )
+
     train = CLICommand(
         "train",
         description="Train a model from configuration.",
@@ -108,6 +125,8 @@ def main() -> None:
         ),
         options=[
             input_name,
+            start,
+            stop,
             output_name,
             checkpoint_out,
             pipeline_opt,

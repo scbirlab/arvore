@@ -29,8 +29,10 @@ def _predict(args: Namespace) -> None:
     )
     config = apply_overrides(config, args.set)
 
+    resolved = DataResolver(args.data).select_rows(args.start, args.stop)
+
     result = box.predict(
-        args.data,
+        resolved.data,
         pipeline=args.pipeline,
         batch_size=config.get(
             "batch_size",
