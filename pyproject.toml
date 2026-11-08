@@ -1,6 +1,6 @@
 [project]
 name = "treeton"
-version = "0.0. "
+version = "0.0.1"
 authors = [
   { name="Eachan Johnson", email="eachan.johnson@crick.ac.uk" },
 ]
@@ -31,11 +31,12 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Programming Language :: Python :: 3 :: Only",
 ]
 
 dependencies = [
-  "aspect-data>=0.0.6",
+  "aspect-data>=0.0.7",
   "carabiner-tools[pd,mpl]>=0.0.5.post3",
   "datasets>=3.5.0",
   "dill>=0.3.9",
@@ -43,14 +44,14 @@ dependencies = [
   "huggingface_hub",
   "jsonargparse>=4.40",
   "numpy",
-  "platformdirs>=4.4.0",
+  "providence>=0.0.2",
   "scikit-learn>=1.7",
   "scipy",
   "tqdm",
 ]
 
 [project.optional-dependencies]
-chem = ["schemist>=0.0.6"]
+chem = ["schemist>=0.0.7"]
 bio = ["vectome>=0.0.7"]
 xgb = ["xgboost_cpu"]
 xgb_cuda12 = ["xgboost-cu12"]
