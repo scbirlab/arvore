@@ -1,69 +1,58 @@
 #!/usr/bin/env bash
 set -euox pipefail
 
-TRAIN="hf://scbirlab/fang-2023-biogen-adme@scaffold-split:train"
-TEST="hf://scbirlab/fang-2023-biogen-adme@scaffold-split:test"
+TRAIN="hf://scbirlab/fang-2023-biogen-adme~scaffold-split:train"
+TEST="hf://scbirlab/fang-2023-biogen-adme~scaffold-split:test"
 LLM="transformer://scbirlab/lchemme-base-zinc22-lteq300:clean_smiles~mean"
 
 script_dir=$(readlink -f $(dirname "$0"))
 OUTPUT_DIR=$(readlink -f "$script_dir"/..)/outputs/original
 CACHE="$OUTPUT_DIR/cache"
 OUTPUT="$OUTPUT_DIR/models"
-HYPERPARAMS="$OUTPUT_DIR"/hyperopt.json
+CONFIG="$OUTPUT_DIR/config.json"
 
 START=50
 STOP=550
 
-printf \
-    '{"n_units": [8, 16], "n_hidden": [4, 6], "residual_depth": [null, 2]}' \
-| duvidnn hyperprep \
-    -o "$HYPERPARAMS"
+mkdir -p "$(dirname "$CONFIG")"
 
-for class in chemprop fingerprint #chemprop
-do
-    for i in 0 1
-    do
-        HF_HOME="$CACHE" duvidnn train \
-            -1 "$TEST" \
-            -2 "$TRAIN" \
-            -x clogp \
-            -S smiles \
-            -y log_rlm \
-            -c "$HYPERPARAMS" \
-            -k "$class" \
-            -i $i \
-            --save-data \
-            --output "$OUTPUT/$class-$i" \
-            --cache "$CACHE" \
-            --epochs 1 \
-            -z 3 \
-            --learning-rate 0.001 \
-            --2d \
-            --fp
-        ls -lah "$OUTPUT"
-        ls -lah "$OUTPUT"/"$class-$i"/*
-        outfile="$script_dir"/outputs/predictions/"$class-$i.csv"
-        HF_HOME="$CACHE" duvidnn predict \
-            --test "$TRAIN" \
-            --checkpoint "$OUTPUT"/"$class-$i" \
-            --start $START \
-            --end $STOP \
-            --variance \
-            --tanimoto \
-            --doubtscore \
-            --information-sensitivity \
-            --last-layer \
-            --optimality \
-            -y log_rlm \
-            --cache "$CACHE" \
-            --output "$outfile"
-        output_nlines=$(cat "$outfile" | wc -l)
-        if [ ! "$output_nlines" -eq "$(( $STOP - $START + 1 ))" ]
-        then
-            echo "Predictions have wrong number of rows: $output_nlines"
-            exit 1
-        else
-            head -n50 "$outfile" | tr , $'\t'
-        fi
-    done
-done
+printf \
+'{
+    "box": {
+        "model": {
+            "class_path": "sklearn.ensemble.RandomForestRegressor",
+            "init_args": {
+                "n_estimators": 20,
+                "random_state": 42
+            }
+        },
+        "pipeline": {
+            "column_transforms": {
+                "fp": ["smiles", "morgan-fingerprint"],
+                "2d": ["smiles", "descriptors-2d"]
+            }
+        },
+        "features": ["clogp", "fp", "2d"],
+        "target": "log_rlm"
+    }
+}' \
+> "$CONFIG"
+
+HF_HOME="$CACHE" \
+treeton train \
+    "$TEST" \
+    -2 "$TRAIN" \
+    --config "$CONFIG" \
+    --checkpoint "$OUTPUT/model.tt" \
+    --cache "$CACHE"
+
+HF_HOME="$CACHE" \
+treeton predict \
+    "$OUTPUT/model.tt" \
+    --data "$TRAIN" \
+    --start "$START" \
+    --stop "$STOP" \
+    --checkpoint "$OUTPUT/pred.pv" \
+    --output "$OUTPUT/pred.csv" \
+    --cache "$CACHE"
+ 

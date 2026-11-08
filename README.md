@@ -1,403 +1,564 @@
-# 🧐 duvidnn
 
-![GitHub Workflow Status (with branch)](https://img.shields.io/github/actions/workflow/status/scbirlab/duvidnn/python-publish.yml)
-![PyPI - Python Version](https://img.shields.io/pypi/pyversions/duvidnn)
-![PyPI](https://img.shields.io/pypi/v/duvidnn)
+# 🌳 Treeton
 
-<img src="docs/source/_static/logo.svg" width="200">
+[GitHub Workflow Status (with branch)](https://img.shields.io/github/actions/workflow/status/scbirlab/treeton/python-test.yml)
+![PyPI - Python Version](https://img.shields.io/pypi/pyversions/treeton)
+![PyPI](https://img.shields.io/pypi/v/treeton)
 
-**duvidnn** is a suite of python tools for calculating confidence and information metrics 
-for deep learning. It provides a higher-level framework for calculating confidence and information metrics
-of general purpose, taxonomic and chemistry-specific neural networks. 
+**Treeton** is a lightweight framework for reproducible tree-based machine learning, combining declarative model configuration, data featurisation, provenance tracking, training, evaluation and checkpointing.
 
-As a bonus, **duvidnn** also provides an easy command-line interface for training and testing models.
+Treeton works with estimators implementing the familiar scikit-learn `fit(X, y)` and `predict(X)` interface. It delegates data loading and provenance to [Providence](https://github.com/scbirlab/providence) and feature transformations to [Aspect](https://github.com/scbirlab/aspect).
+
+The goal is to make a machine-learning experiment easy to **specify, run, save and reproduce**, whether the input is a local table, molecular fingerprints or other structured scientific data.
+
+## Features
+
+- **Estimator-agnostic training** — instantiate compatible estimators from a JSON configuration, including scikit-learn tree models.
+- **Composable feature transformations** — use Aspect to generate, concatenate and reuse features.
+- **Dataset provenance** — resolve local and remote datasets using Providence, with source metadata carried into training checkpoints.
+- **Checkpointing** — save fitted models together with pipeline configurations and training-data artefacts.
+- **Batched prediction** — predict over Hugging Face Datasets, with optional CLI row selection.
+- **Model evaluation** — calculate RMSE/RMSD, MAE, Pearson's *r* and Spearman's ρ.
+- **CLI and Python API** — use the same `Box` abstraction interactively or in automated workflows.
+
+Treeton is at an early stage of development. Random-forest regression is covered by end-to-end tests; compatibility with other estimators depends on their APIs.
+
+## Contents
 
 - [Installation](#installation)
+- [Quick start](#quick-start)
 - [Command-line interface](#command-line-interface)
+- [Configuration](#configuration)
 - [Python API](#python-api)
-    - [Neural networks](#neural-networks)
-    - [More advanced API](#more-advanced-python-api-implementing-a-new-modelbox)
-- [Issues, problems, suggestions](#issues-problems-suggestions)
-- [Documentation](#documentation)
+- [Molecular machine learning](#molecular-machine-learning)
+- [Checkpoints and reproducibility](#checkpoints-and-reproducibility)
+- [Development](#development)
+- [Related packages](#related-packages)
 
 ## Installation
 
-### The easy way
+Treeton requires Python 3.11 or later.
 
-You can install the precompiled version directly using `pip`.
+### From GitHub
 
 ```bash
-$ pip install duvidnn
+pip install "git+https://github.com/scbirlab/treeton.git@dev"
 ```
 
-If you want to use duvidnn for chemistry machine learning and AI, use:
+For development:
 
 ```bash
-$ pip install duvidnn[chem]
+git clone https://github.com/scbirlab/treeton.git
+cd treeton
+pip install -e ".[dev]"
 ```
 
-For integrating taxonomic information with [vectome](https://github.com/scbirlab/vectome), use:
+### Optional dependencies
+
+Additional packages are available for specialised workflows:
 
 ```bash
-$ pip install duvidnn[bio]
+# Chemical featurisation through Schemist
+pip install -e ".[chem]"
+
+# Biological sequence and taxonomy features through Vectome
+pip install -e ".[bio]"
+
+# XGBoost
+pip install -e ".[xgb]"
+
+# LightGBM
+pip install -e ".[lgbm]"
 ```
 
-You can install both:
+See `pyproject.toml` for the complete list of optional dependency groups, including CUDA-specific XGBoost options.
+
+## Quick start
+
+Train a random forest, save it and predict on new observations using a single JSON configuration.
+
+### 1. Prepare some data
+
+For a self-contained example, create a small CSV training dataset and a prediction dataset:
 
 ```bash
-$ pip install duvidnn[bio,chem]
+printf 'x,y\n1,3\n2,5\n3,7\n4,9\n5,11\n6,13\n7,15\n8,17\n9,19\n10,21\n' > train.csv
+
+printf 'x\n2.5\n5.5\n8.5\n' > unseen.csv
 ```
 
-### From source
+### 2. Define an experiment
 
-Clone the repository, then `cd` into it. Then run:
+Save the following as `experiment.json`:
 
-```bash
-$ pip install -e .
+```json
+{
+  "box": {
+    "model": {
+      "class_path": "sklearn.ensemble.RandomForestRegressor",
+      "init_args": {
+        "n_estimators": 100,
+        "random_state": 42
+      }
+    },
+    "pipeline": {
+      "column_transforms": {
+        "log_x": ["x", "log"]
+      }
+    },
+    "features": ["log_x"],
+    "target": "y"
+  }
+}
 ```
 
-## Command-line interface
+This configuration specifies:
 
-**duvidnn** has a command-line interface for training and checkpointing the built-in models. 
+1. A `RandomForestRegressor` with reproducible initialisation.
+2. An Aspect transform generating `log_x` from `x`.
+3. The feature columns supplied to the estimator.
+4. The prediction target.
+
+Treeton converts the selected feature columns into a numeric matrix before calling the estimator.
+
+### 3. Train
 
 ```bash
-$ duvidnn --help
-usage: duvidnn [-h] [--version] {hyperprep,train,predict,split,percentiles} ...
-
-Calculating exact and approximate confidence and information metrics for deep learning on general purpose and chemistry tasks.
-
-options:
-  -h, --help            show this help message and exit
-  --version, -v         show program's version number and exit
-
-Sub-commands:
-  {hyperprep,train,predict,split,percentiles}
-                        Use these commands to specify the tool you want to use.
-    hyperprep           Prepare inputs for hyperparameter search.
-    train               Train a PyTorch model.
-    predict             Make predictions and calculate uncertainty using a duvidnn checkpoint.
-    split               Make chemical train-test-val splits on out-of-core datasets.
-    percentiles         Add columns indicating whether rows are in a percentile.
+treeton train train.csv \
+    --config experiment.json \
+    --checkpoint model.tt
 ```
 
-In all cases, you can get further options with `duvidnn <command> --help`, for example:
+The `model.tt` directory contains the fitted estimator and the information required to reconstruct its preprocessing pipeline.
+
+### 4. Predict
 
 ```bash
-duvidnn train --help
-```
-
-### Annotating top percentiles
-
-You can add columns to datasets which annotate the top percentiles of named columns. This is compatible
-with extremely large datasets that don't fit in memory.
-
-```bash
-$ duvidnn percentiles \
-    hf://scbirlab/fang-2023-biogen-adme@scaffold-split:train \
-    --columns clogp tpsa \
-    --percentiles 1 5 10 \
-    --output percentiles.parquet \
-    --plot percentiles-plot.png \
-    --structure smiles
-```
-
-In all cases, input data can be:
-- Path to a _local_ file in CSV, Parquet, Arrow or HF Dataset format
-- _or_ a remote dataset hosted on [🤗 Datasets](https://huggingface.co/datasets), 
-indicated by `hf://` followed by the repository name
-
-### Data splitting
-
-There are utilities for out-of-memory scaffold and (approximate using FAISS) spectral splitting of datasets
-that don't fit in memory. Make it random but reproducible with `--seed`, otherwise a deterministic bin-packing
-algorithm is used.
-
-```bash
-$ duvidnn split hf://scbirlab/fang-2023-biogen-adme@scaffold-split:train \
-    --train .7 \
-    --validation .15 \
-    --structure smiles \
-    --type faiss \
-    --seed 1 \
-    --output faiss.csv \
-    --plot faiss.png
-  ```
-
-### Model training and evaluation
-
-To train:
-
-```bash
-$ duvidnn train -1 hf://scbirlab/fang-2023-biogen-adme@scaffold-split:train \
-    -2 hf://scbirlab/fang-2023-biogen-adme@scaffold-split:test \
-    --class fingerprint \
-    --structure smiles \
-    --ensemble-size 10 \
-    --epochs 10 \
-    --learning-rate 0.001 \
-    --output model.dv
-```
-
-Different model classes can be specified:
-
-
-### Hyperparameters
-
-There is also a simple hyperparameter utility.
-
-```bash
-$ printf '{"model_class": "fingerprint", use_2d": [true, false], "n_units": 16, "n_hidden": 3}' | duvidnn hyperprep -o hyperopt.json
-```
-
-This generates a file containing all combinations. It can be indexed (0-based) 
-with the `-i <int>` option to supply a specific training configuration like so:
-
-```bash
-$ duvidnn train \
-    -1 hf://scbirlab/fang-2023-biogen-adme@scaffold-split:train \
-    -2 hf://scbirlab/fang-2023-biogen-adme@scaffold-split:test \
-    -c hyperopt.json \
-    -i 0 \
-    --output model.dv
-```
-
-In this way, you can generate all the hyperparameter combinations, then systematically test them one by one 
-(or in parallel using HPC or other methods).
-
-### Predictions
-
-You can make predictions on datasets using `duvidnn predict`. Optionally, you can restrict prediction to only a chunk of the
-dataset using `--start` and `--stop`. This can be useful to parallelize prediction across chunks.
-
-When predicting, there is also the option to calculate uncertainty metrics like ensemble variance (`--variance`), 
-Tanimoto nearest neighbor distance to training set (`--tanimoto`, for chemistry models), doubtscore (`--doubtscore`), 
-and information sensitivity (`--information-sensitivity`). 
-
-```bash
-$ duvidnn predict \
-    --test hf://scbirlab/fang-2023-biogen-adme@scaffold-split:test \
-    --checkpoint model.dv \
-    --start 100 \
-    --end 200 \
-    --variance \
-    --tanimoto \
-    --doubtscore \
-    -y clogp \
+treeton predict model.tt \
+    --data unseen.csv \
     --output predictions.parquet
 ```
 
-Outputs can be made in CSV, Parquet, Arrow, or HF Dataset format. This is inferred from the file extension of
-the filename provided for `--output`. 
+The output contains the input observations and a prediction column named `prediction:y`.
 
-Note that information sensitivity using default parameters can be very slow for large models with large
-training data, since it must calculate second-order parameter gradients for every training example. There are 
-approximations which can speed it up substantially, at the cost of exactness:
-- The `--last-layer` option gives the biggest speed-up, since it restricts the calculation to only the output layer of the model. 
-- Using `--optimality` assumes the model has been trained to an optimum (i.e. gradient of loss is zero). 
-- The `--approx bekas` option uses a fast approximation of second-order gradients.
+You can also save the predictions as a Providence dataset checkpoint:
+
+```bash
+treeton predict model.tt \
+    --data unseen.csv \
+    --checkpoint predictions.pv
+```
+
+Both output options can be used together.
+
+## Command-line interface
+
+Treeton provides two primary commands:
+
+```bash
+treeton train --help
+treeton predict --help
+```
+
+### Training
+
+```bash
+treeton train DATA \
+    --config experiment.json \
+    --checkpoint model.tt
+```
+
+`DATA` can be a supported local or remote dataset specification understood by Providence.
+
+Common training options:
+
+| Option | Description |
+| --- | --- |
+| `--config` | JSON experiment configuration |
+| `--checkpoint`, `-c` | Output model checkpoint directory |
+| `--validation`, `-2` | Optional validation dataset |
+| `--pipeline`, `-p` | Override the configured Aspect pipeline with a JSON file |
+| `--set` | Override a configuration value |
+| `--cache` | Directory for dataset and preprocessing caches |
+
+#### Configuration overrides
+
+Use `--set` to override nested configuration values without editing the JSON file:
+
+```bash
+treeton train train.csv \
+    --config experiment.json \
+    --checkpoint model.tt \
+    --set box.model.init_args.n_estimators=500 \
+    --set box.model.init_args.max_depth=12
+```
+
+Overrides use `dotted.path=value` notation. Values are parsed as JSON when possible, so integers, floating-point numbers, booleans, `null` and arrays are supported.
+
+For example:
+
+```bash
+--set box.features='["log_x","another_feature"]'
+```
+
+The corresponding feature must exist in the input data or be generated by the selected pipeline.
+
+### Prediction
+
+```bash
+treeton predict MODEL_CHECKPOINT \
+    --data DATA \
+    --output predictions.parquet
+```
+
+Common prediction options:
+
+| Option | Description |
+| --- | --- |
+| `--data`, `-d` | Dataset on which to predict |
+| `--output`, `-o` | Output table, e.g. CSV or Parquet |
+| `--checkpoint`, `-c` | Output Providence dataset checkpoint |
+| `--start` | First row to predict, inclusive |
+| `--stop` | Row at which to stop, exclusive |
+| `--pipeline`, `-p` | Override preprocessing pipeline |
+| `--config` | Optional JSON prediction settings |
+| `--set` | Override prediction settings |
+| `--cache` | Cache directory |
+
+For example, predict a subset of a larger dataset:
+
+```bash
+treeton predict model.tt \
+    --data dataset.parquet \
+    --start 10000 \
+    --stop 20000 \
+    --output predictions-10000-20000.parquet
+```
+
+The selected interval follows Python slicing semantics: `[start:stop]`.
+
+Prediction settings may also be supplied in JSON:
+
+```json
+{
+  "batch_size": 2048
+}
+```
+
+```bash
+treeton predict model.tt \
+    --data unseen.csv \
+    --config predict.json \
+    --output predictions.parquet
+```
+
+## Configuration
+
+The experiment configuration has a small number of top-level sections:
+
+```json
+{
+  "box": {
+    "model": {
+      "class_path": "sklearn.ensemble.RandomForestRegressor",
+      "init_args": {
+        "n_estimators": 100,
+        "random_state": 42
+      }
+    },
+    "pipeline": {},
+    "features": ["feature_1", "feature_2"],
+    "target": "response"
+  },
+  "fit": {},
+  "save": {}
+}
+```
+
+### `box.model`
+
+The model is specified using a fully qualified Python class path and constructor arguments.
+
+```json
+{
+  "class_path": "sklearn.ensemble.ExtraTreesRegressor",
+  "init_args": {
+    "n_estimators": 200,
+    "random_state": 42
+  }
+}
+```
+
+This mechanism can instantiate other compatible estimator classes available in the environment. Backend-specific behaviour may require additional integration and testing.
+
+### `box.pipeline`
+
+The pipeline is an [Aspect](https://github.com/scbirlab/aspect) configuration describing transformations from source columns to model features.
+
+For example:
+
+```json
+{
+  "column_transforms": {
+    "log_x": ["x", "log"]
+  }
+}
+```
+
+The `features` list refers to the logical feature names, including transformed output names.
+
+A model can use both existing and transformed columns:
+
+```json
+{
+  "features": ["numeric_feature", "log_x"]
+}
+```
+
+### `box.features` and `box.target`
+
+Features are supplied as an ordered list of column names. Each selected column can contain a scalar or a fixed-length numeric vector; Treeton concatenates them into a numeric feature matrix.
+
+The target may be a single column or a list of columns:
+
+```json
+{
+  "features": ["fingerprint", "descriptors"],
+  "target": ["activity_a", "activity_b"]
+}
+```
+
+Multi-target training requires an estimator that supports multiple outputs.
+
+### `fit` and `save`
+
+The `fit` section passes keyword arguments to `Box.fit()`. The `save` section passes options to the underlying Aspect pipeline checkpoint.
+
+For example:
+
+```json
+{
+  "save": {
+    "save_source_data": true,
+    "save_transformed": false
+  }
+}
+```
+
+Whether the source data are embedded or referenced affects checkpoint size and portability.
 
 ## Python API
 
-**duvidnn** provides python classes and functions for custom analysis.
+The core abstraction is `treeton.Box`, which combines an estimator, its feature definitions and an Aspect pipeline.
 
-### Neural networks
-
-The core of **duvidnn** is the `ModelBox`, which is a container for a trainable model and its training data.
-These are connected because measures of confidence and information gain depend directly on the information
-or evidence already seen by the model.
-
-There are several `ModelBox` classes for specific deep learning architechtures in pytorch. 
+### Train and predict
 
 ```python
->>> from duvidnn.autoclass import MODELBOX_REGISTRY
->>> from pprint import pprint
->>> pprint(MODELBOX_REGISTRY)
-{'bilinear': <class 'duvidnn.torch.modelbox.modelboxes.TorchBilinearModelBox'>,
- 'bilinear-fp': <class 'duvidnn.torch.modelbox.modelboxes.TorchBilinearFingerprintModelBox'>,
- 'chemprop': <class 'duvidnn.torch.modelbox.modelboxes.ChempropModelBox'>,
- 'cnn': <class 'duvidnn.torch.modelbox.modelboxes.TorchCNN2DModelBox'>,
- 'fingerprint': <class 'duvidnn.torch.modelbox.modelboxes.TorchFingerprintModelBox'>,
- 'mlp': <class 'duvidnn.torch.modelbox.modelboxes.TorchMLPModelBox'>}
+import json
+
+from treeton import Box
+
+with open("experiment.json") as f:
+    experiment = json.load(f)
+
+box = Box.from_config(experiment["box"])
+
+box.fit("train.csv")
+
+predictions = box.predict("unseen.csv")
+print(predictions["prediction:y"])
 ```
 
-The modelboxes `chemprop`, `fingerprint`, and `bilinear-fp` featurize SMILES representations of chemical 
-structures. The modelbox `mlp` is a general purpose multilayer perceptron.
+`predict()` returns a Hugging Face Dataset containing prediction columns alongside the prepared input data.
 
-You can set up your model with various training parameters.
+### Save and restore
 
 ```python
-from duvidnn.autoclass import AutoClass
-modelbox = AutoClass(
-    "fingerprint",
-    n_units=16,
-    n_hidden=2,
-    ensemble_size=10,
-    structure_column="smiles",
+box.save("model.tt")
+
+restored = Box.load("model.tt")
+
+predictions = restored.predict("unseen.csv")
+```
+
+The model and preprocessing pipeline are restored together.
+
+### Use an existing estimator
+
+You can also construct a `Box` directly:
+
+```python
+from sklearn.ensemble import RandomForestRegressor
+from treeton import Box
+
+box = Box(
+    model=RandomForestRegressor(
+        n_estimators=200,
+        random_state=42,
+    ),
+    features=["x"],
+    target="y",
 )
+
+box.fit("train.csv")
+box.save("model.tt")
 ```
 
-The internal neural network is instantiated on loading training data.
+A model passed directly need only implement compatible `fit()` and `predict()` methods.
+
+### Evaluate a model
 
 ```python
-modelbox.load_training_data(
-    data="hf://scbirlab/fang-2023-biogen-adme@scaffold-split:train",
-    inputs="smiles", # column name of the predictor values
-    labels="clogp",  # column name of the values to predict
+predicted, scores = box.evaluate(
+    "train.csv",
+    metrics=["rmse", "mae", "pearson", "spearman"],
 )
+
+print(scores)
 ```
 
-The `data` can be a remote 🤗 dataset, in which case it is automatically downloaded. The `"@"`
-indicates the dataset configuration, and the `":"` indicates the specific data split.
+`evaluate()` returns a tuple containing the predicted dataset and a dictionary of metric values.
 
-Alternatively, the training data can be a local CSV or TSV file, or in-memory Pandas dataframes 
-or dictionaries.
+Available registered regression metrics include:
 
-With training data loaded, the model can be trained!
+| Metric | Description |
+| --- | --- |
+| `rmsd`, `rmse` | Root mean square deviation/error |
+| `mae` | Mean absolute error |
+| `pearson` | Pearson correlation coefficient |
+| `spearman` | Spearman rank correlation coefficient |
+
+Evaluation requires the target columns to be present. For meaningful model assessment, use held-out data rather than the training set.
+
+### Verify the training data source
+
+When the original data source is available through Providence, its recorded provenance can be accessed and verified:
 
 ```python
-modelbox.train(
-    val_filename="hf://scbirlab/fang-2023-biogen-adme@scaffold-split:test",
-    epochs=10,
-    batch_size=128,
-)
+source = box.training_data_source
+
+if source is not None:
+    print(box.verify_training_data_source())
 ```
 
-The `ModelBox.train()` method uses pytorch Lightning under the hood, so other options such as callbacks
-for this framework should be accepted.
+A returned `None` indicates that no verifiable source is available. Source verification does not independently guarantee reproducibility of the entire software environment.
 
-#### Saving and sharing a trained model
+## Molecular machine learning
 
-**duvidnn** provides a basic checkpointing mechanism to save model weights and training data to later reload.
+Treeton is intended to work with scientific feature representations, including molecular fingerprints and descriptors.
 
-```python
-modelbox.save_checkpoint("checkpoint.dv")
-modelbox.load_checkpoint("checkpoint.dv")
+For chemical featurisation, install the `chem` optional dependencies and specify Aspect transforms:
+
+```json
+{
+  "box": {
+    "model": {
+      "class_path": "sklearn.ensemble.RandomForestRegressor",
+      "init_args": {
+        "n_estimators": 200,
+        "random_state": 42
+      }
+    },
+    "pipeline": {
+      "column_transforms": {
+        "fp": ["smiles", "morgan-fingerprint"],
+        "descriptors": ["smiles", "descriptors-2d"]
+      }
+    },
+    "features": ["fp", "descriptors"],
+    "target": "activity"
+  }
+}
 ```
 
-#### Evaluating and predicting on new data
+This example assumes a dataset with `smiles` and `activity` columns. The transforms create feature vectors that Treeton concatenates before fitting the model.
 
-**duvidnn** `ModelBox`es provide methods for evaluating predictions on new data.
+Dataset specifications supported by Providence can also refer to remote resources, including Hugging Face datasets:
 
-```python
-predictions, metrics = modelbox.evaluate(
-    data="hf://scbirlab/fang-2023-biogen-adme@scaffold-split:test",
-)
+```bash
+treeton train \
+    'hf://scbirlab/fang-2023-biogen-adme~scaffold-split:train' \
+    --config experiment.json \
+    --checkpoint model.tt
 ```
 
-#### Calculating uncertainty and information metrics
+Adjust the feature and target definitions to match the selected dataset.
 
-**duvidnn** `ModelBox`es provide methods for calculating prediction variance of ensembles,
-doubtscore, and information sensitivity.
+For dataset splitting, see [Eluent](https://github.com/scbirlab/eluent), which handles split assignments separately from model training.
 
-```python
-doubtscore = modelbox.doubtscore(
-    data="hf://scbirlab/fang-2023-biogen-adme@scaffold-split:test"
-)
-info_sens = modelbox.information_sensitivity(
-    data="hf://scbirlab/fang-2023-biogen-adme@scaffold-split:test",
-    approx="bekas",  # approximate Hessian diagonals
-    n=10,
-)
+## Checkpoints and reproducibility
+
+A Treeton model checkpoint is a directory containing the saved estimator, a manifest and its Aspect pipeline checkpoint.
+
+For example:
+
+```text
+model.tt/
+├── config.json
+├── model.joblib
+└── training-data.as/
+    └── ...
 ```
 
-To avoid storing large datasets in memory, **duvidnn** uses [🤗 datasets](https://huggingface.co/docs/datasets/) under the hood
-to cache data. Results can be instantiated in memory with a little effort. For example:
+`config.json` records the checkpoint schema, experiment configuration and artefact locations.
 
-```python
-doubtscore = doubtscore.to_pandas()
+`model.joblib` stores the fitted Python estimator. Models exposing a native `save()` method may also generate a native-format artefact, although the current loader restores the joblib representation.
+
+`training-data.as/` contains the Aspect pipeline checkpoint, including its configuration and the training-data source information managed by Providence.
+
+The pipeline can preserve references to immutable remote datasets or package local source data, according to its checkpoint options.
+
+### Reproducibility considerations
+
+A checkpoint makes model restoration convenient, but exact reproducibility also depends on:
+
+- The original data and its version or checksum.
+- The preprocessing implementation and dependencies.
+- The fitted model's software versions.
+- Random seeds and numerical execution environment.
+
+For long-term archival, retain the checkpoint alongside a record of the package environment, such as a lock file or container image.
+
+**Security:** joblib uses pickle-based deserialization. Only load model checkpoints from trusted sources.
+
+## Development
+
+Install the development dependencies:
+
+```bash
+pip install -e ".[dev]"
 ```
 
-See the [🤗 datasets documentation](https://huggingface.co/docs/datasets/) for more.
+Run the unit and integration tests:
 
-## More advanced Python API: Implementing a new `ModelBox`
-
-Bringing a new pytorch model to **duvidnn** is relatively straightforward. First, write your model,
-adding Lighning logic and a `create_model()` method:
-
-```python
-from typing import Callable, Iterable, List, Mapping, Optional
-
-from torch.nn import BatchNorm1d, Dropout, Linear, Module, SiLU, Sequential
-from duvidnn.torch import TorchEnsembleMixin
-from duvidnn.torch.models.utils.lt import LightningMixin
-from torch import nn
-from torch.optim import Adam, Optimizer
-
-class SimpleMLP(nn.Module, LightningMixin):
-
-    def __init__(
-        self, 
-        n_input: int, 
-        n_units: int = 16, 
-        n_out: int = 1,
-        activation: Callable = nn.SiLU,  # Smooth activation to prevent vanishing gradient
-        learning_rate: float = .01,
-        optimizer: Optimizer = Adam,
-        *args, **kwargs
-    ):
-        super().__init__(*args, **kwargs)
-        self.n_input = n_input
-        self.n_units = n_units
-        self.activation = activation
-        self.n_out = n_out
-        self.model_layers = nn.Sequential([
-            nn.Linear(self.n_input, self.n_units),
-            self.activation(),
-            nn.Linear(self.n_units, self.n_out),
-        ])
-        # Lightning logic
-        self._init_lightning(
-            optimizer=optimizer, 
-            learning_rate=learning_rate, 
-            model_attr='model_layers',  # the attribute containing the model
-        )
-
-    def forward(self, x):
-        return self.model_layers(x)
+```bash
+pytest -q test
 ```
 
-Then subclass `duvidnn.torch.modelbox.TorchModelBoxBase` and implement the `create_model()` method, which should
-simply return your instantiated model. If you want to preprocess input data on the fly, then
-add a `preprocess_data()` method which takes a data dictionary and returns a data dictionary.
+Run module doctests:
 
-```python
-from typing import Dict
-
-from duvidnn.torch.modelbox import TorchModelBoxBase
-import numpy as np
-
-class MLPModelBox(TorchModelBoxBase):
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self._mlp_kwargs = kwargs
-
-    def create_model(self, *args, **kwargs):
-        self._model_config.update(kwargs)  # makes sure model checkpointing saves the keyword args
-        return SimpleMLP(
-            n_input=self.input_shape[-1],  # defined on data loading
-            n_out=self.output_shape[-1], 
-            *args, 
-            **self._model_config,
-            **self._mlp_kwargs,  # if init kwargs are relevant to model creation
-        )
-
-    # Define this method if your data needs preprocessing
-    @staticmethod
-    def preprocess_data(data: Dict[str, np.ndarray], _in_key, _out_key, **kwargs) -> Dict[str, np.ndarray]:
-        return {
-            _in_key: your_featurizer(data[_in_key]), 
-            _out_key: np.asarray(data[_out_key])
-        }
+```bash
+pytest -q treeton --doctest-modules
 ```
 
-If you want to build `ModelBox`es based on a framework other than pytorch, you can subclass 
-the `duvidnn.base.ModelBoxBase` abstract class, making sure to implement its abstract methods.
+The GitHub Actions workflows also exercise the command-line interface, including training and prediction on a remote scientific dataset.
 
-## Issues, problems, suggestions
+To report a bug or propose a feature, open an [issue](https://github.com/scbirlab/treeton/issues).
 
-Add to the [issue tracker](https://www.github.com/scbirlab/duvidnn/issues).
+## Related packages
 
-## Documentation
+Treeton is designed to work as part of a modular machine-learning workflow:
 
-(To come at [ReadTheDocs](https://duvidnn.readthedocs.org).)
+| Package | Role |
+| --- | --- |
+| [Providence](https://github.com/scbirlab/providence) | Dataset resolution, provenance and checkpointing |
+| [Eluent](https://github.com/scbirlab/eluent) | Dataset splitting and split provenance |
+| [Aspect](https://github.com/scbirlab/aspect) | Feature transformation and representation |
+| [Treeton](https://github.com/scbirlab/treeton) | Tree-based estimator training and evaluation |
+| [Duvidnn](https://github.com/scbirlab/duvidnn) | Neural-network modelling and uncertainty methods |
+
+Each package has a separate responsibility, making it possible to reuse the same data sources, splits and feature representations across different model families.
+
+## License
+
+Treeton is distributed under the [MIT License](LICENSE).

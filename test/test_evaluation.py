@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from duvidnn.base.evaluation import rmse, pearson_r, spearman_r
+from treeton.metrics import rmse, mae, pearson_r, spearman_r
 
 
 def test_rmse_simple():
