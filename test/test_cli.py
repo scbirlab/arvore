@@ -3,9 +3,9 @@ from argparse import Namespace
 
 import pandas as pd
 
-from duvidnn.cli.predict import _predict
-from duvidnn.cli.train import _train
-from duvidnn.config import (
+from treeton.cli.predict import _predict
+from treeton.cli.train import _train
+from treeton.config import (
     apply_overrides,
     resolve_experiment_config,
 )

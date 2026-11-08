@@ -16,6 +16,12 @@ from .train import _train
 
 def main() -> None:
 
+    input_name = CLIOption(
+        "input_file",
+        required=True,
+        type=str,
+    )
+
     config_opt = CLIOption(
         "--config",
         "-c",
@@ -33,19 +39,22 @@ def main() -> None:
             "dotted.path=value. May be repeated."
         ),
     )
+    pipeline_opt = CLIOption(
+        "--pipeline",
+        "-p",
+        default=None,
+        type=str,
+        help=(
+            "Pipeline definition to use to override box.pipeline."
+        ),
+    )
 
     train = CLICommand(
         "train",
         description="Train a model from configuration.",
         options=[
             config_opt,
-            CLIOption(
-                "--training",
-                "-1",
-                required=True,
-                type=str,
-                help="Training dataset",
-            ),
+            input_name,
             CLIOption(
                 "--validation",
                 "-2",
@@ -63,6 +72,7 @@ def main() -> None:
                     "used to override box.model."
                 ),
             ),
+            pipeline_opt,
             CLIOption(
                 "--output",
                 "-o",
@@ -87,12 +97,8 @@ def main() -> None:
             "Predict from a Box checkpoint."
         ),
         options=[
-            CLIOption(
-                "--checkpoint",
-                "-k",
-                required=True,
-                type=str,
-            ),
+            ,
+            pipeline_opt,
             CLIOption(
                 "--data",
                 "-d",
