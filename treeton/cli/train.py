@@ -17,25 +17,25 @@ def _train(args: Namespace) -> None:
         overrides=args.set,
     )
     try:
-        box_config = config["box"]
+        box_config = dict(config["box"])
     except KeyError as error:
         raise ValueError(
             "Training config requires "
             "a `box` section."
         ) from error
-
+    
+    if args.pipeline is not None:
+        box_config["pipeline"] = args.pipeline
     box = Box.from_config(
         box_config,
         cache_dir=args.cache,
     )
-    fit_kwargs = dict(config.get("fit", {}))
     box.fit(
         args.input_file,
         validation=args.validation,
-        **fit_kwargs,
+        **config.get("fit", {}),
     )
-    save_kwargs = dict(config.get("save", {}))
     box.save(
         args.checkpoint,
-        **save_kwargs,
+        **config.get("save", {}),
     )

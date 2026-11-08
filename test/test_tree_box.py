@@ -1,64 +1,106 @@
 import json
-from argparse import Namespace
+import subprocess
 
 import numpy as np
-import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
+from datasets import Dataset
+
 from treeton import Box
-from treeton.cli.train import _train
-from treeton.cli.predict import _predict
 
 
-def test_tree_box_roundtrip(tmp_path):
-    train = tmp_path / 'training.parquet'
-    test = tmp_path / 'test.parquet'
-    x = np.linspace(0, 3, 24)
-    pd.DataFrame({'x': x, 'y': 2 * x + 1}).to_parquet(train)
-    pd.DataFrame({'x': [0.7, 1.5, 2.8]}).to_parquet(test)
+def make_data(tmp_path):
+    training = tmp_path / "train.parquet"
+    testing = tmp_path / "test.parquet"
 
-    config = {
-        'box': {
-            'model': {'class_path': 'sklearn.ensemble.RandomForestRegressor',
-                      'init_args': {'n_estimators': 12, 'random_state': 1}},
-            'pipeline': {},
-            'features': ['x'], 'target': 'y',
+    Dataset.from_dict({
+        "x": [float(i) for i in range(1, 31)],
+        "y": [float(i * 2 + 1) for i in range(1, 31)],
+    }).to_parquet(str(training))
+
+    Dataset.from_dict({
+        "x": [1.5, 6.5, 15.5],
+    }).to_parquet(str(testing))
+
+    return training, testing
+
+
+def make_config():
+    return {
+        "model": {
+            "class_path": "sklearn.ensemble.RandomForestRegressor",
+            "init_args": {
+                "n_estimators": 20,
+                "random_state": 42,
+            },
         },
+        "pipeline": {
+            "column_transforms": {
+                "log_x": ["x", "log"],
+            },
+        },
+        "features": ["log_x"],
+        "target": "y",
     }
-    config_file = tmp_path / 'experiment.json'
-    config_file.write_text(json.dumps(config))
-    checkpoint = tmp_path / 'model.tt'
-    output = tmp_path / 'predictions.parquet'
-
-    _train(Namespace(config=str(config_file), model=None, set=None,
-                     training=str(train), validation=None,
-                     cache=str(tmp_path / 'cache'), output=str(checkpoint)))
-    assert (checkpoint / 'data' / 'config.json').exists()
-
-    loaded = Box.load(checkpoint, cache_dir=str(tmp_path / 'cache'))
-    expected = loaded.predict(str(test))['prediction']
-    _predict(Namespace(checkpoint=str(checkpoint), data=str(test),
-                       output=str(output), config=None, set=None,
-                       cache=str(tmp_path / 'cache')))
-    assert np.allclose(pd.read_parquet(output)['prediction'], expected)
-    assert np.isfinite(np.asarray(expected, dtype=float)).all()
 
 
-def test_logical_aspect_feature_alias(tmp_path):
-    train = tmp_path / 'train.parquet'
-    test = tmp_path / 'test.parquet'
-    pd.DataFrame({'x': [1., 2., 3., 4., 5.],
-                  'y': [2., 3., 5., 7., 11.]}).to_parquet(train)
-    pd.DataFrame({'x': [1.5, 3.5]}).to_parquet(test)
-    config = {
-        'model': {'class_path': 'sklearn.ensemble.RandomForestRegressor',
-                  'init_args': {'n_estimators': 5, 'random_state': 0}},
-        'pipeline': {'column_transforms': {'log_x': ['x', 'log']}},
-        'features': ['log_x'], 'target': 'y',
-    }
-    box = Box.from_config(config)
-    box.fit(str(train))
-    before = np.asarray(box.predict(str(test))['prediction'])
-    path = tmp_path / 'model.tt'
-    box.save(path)
-    after = np.asarray(Box.load(path).predict(str(test))['prediction'])
+def test_box_checkpoint_roundtrip(tmp_path):
+    training, testing = make_data(tmp_path)
+
+    box = Box.from_config(make_config())
+    box.fit(str(training))
+
+    before = np.asarray(
+        box.predict(str(testing))["prediction:y"]
+    )
+
+    checkpoint = tmp_path / "model.tt"
+    box.save(checkpoint)
+
+    assert (checkpoint / "config.json").is_file()
+    assert (checkpoint / "model.joblib").is_file()
+    assert (checkpoint / "training-data.as").is_dir()
+
+    restored = Box.load(checkpoint)
+
+    after = np.asarray(
+        restored.predict(str(testing))["prediction:y"]
+    )
+
     np.testing.assert_allclose(before, after)
+
+
+def test_cli_train_predict(tmp_path):
+    training, testing = make_data(tmp_path)
+
+    config_path = tmp_path / "experiment.json"
+    config_path.write_text(json.dumps({
+        "box": make_config(),
+    }))
+
+    checkpoint = tmp_path / "model.tt"
+    output = tmp_path / "predictions.parquet"
+
+    subprocess.run(
+        [
+            "treeton", "train", str(training),
+            "--config", str(config_path),
+            "--checkpoint", str(checkpoint),
+        ],
+        check=True,
+    )
+
+    subprocess.run(
+        [
+            "treeton", "predict", str(checkpoint),
+            "--data", str(testing),
+            "--output", str(output),
+        ],
+        check=True,
+    )
+
+    predictions = Dataset.from_parquet(str(output))
+
+    assert "prediction:y" in predictions.column_names
+    assert len(predictions) == 3
+    assert np.isfinite(
+        predictions["prediction:y"]
+    ).all()

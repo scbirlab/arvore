@@ -4,7 +4,8 @@ from argparse import Namespace
 
 from carabiner.cliutils import clicommand
 
-from ..box import Box, DEFAULT_BATCH_SIZE
+from ..box import Box
+from ..box.base import DEFAULT_BATCH_SIZE
 from ..config import apply_overrides
 
 
@@ -18,7 +19,7 @@ def _predict(args: Namespace) -> None:
         raise ValueError("Set at least one of --checkpoint and --output")
     
     box = Box.load(
-        args.checkpoint,
+        args.input_file,
         cache_dir=args.cache,
     )
     config = (
@@ -30,6 +31,7 @@ def _predict(args: Namespace) -> None:
 
     result = box.predict(
         args.data,
+        pipeline=args.pipeline,
         batch_size=config.get(
             "batch_size",
             DEFAULT_BATCH_SIZE,

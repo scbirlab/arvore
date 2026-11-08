@@ -18,7 +18,6 @@ def main() -> None:
 
     input_name = CLIOption(
         "input_file",
-        required=True,
         type=str,
     )
     output_name = CLIOption(
@@ -76,7 +75,7 @@ def main() -> None:
         options=[
             input_name,
             # output_name,
-            checkpoint_out,
+            checkpoint_out.replace(required=True),
             CLIOption(
                 "--validation",
                 "-2",
@@ -115,7 +114,7 @@ def main() -> None:
             CLIOption(
                 "--data",
                 "-d",
-                required=True,
+                default=None,
                 type=str,
             ),
             config_opt.replace(**{

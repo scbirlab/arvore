@@ -1,5 +1,5 @@
-from typing import TYPE_CHECKING, Any, TypeAlias
-from collections.abc import Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Any, TypeAlias, Protocol
+from collections.abc import Callable, Mapping
 
 from providence.typing import DataLike
 

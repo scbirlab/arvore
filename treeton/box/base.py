@@ -33,37 +33,33 @@ def _json_copy(
     return json.loads(json.dumps(value))
 
 
-def _resolve_pipeline(pipeline: PipelineLike | None = None) -> DataPipeline:
-    """Resolve a pipeline specification."""
-    from aspect.data import DataPipeline
+def _resolve_pipeline(
+    pipeline: PipelineLike | None = None,
+    *,
+    cache_dir: str | None = None,
+) -> DataPipeline:
+    """Resolve an Aspect pipeline or its declarative configuration."""
+    from aspect import DataPipeline
+
     if isinstance(pipeline, DataPipeline):
         return pipeline
 
-    if callable(pipeline):
-        print_err(
-            "[WARN] Only aspect.DataPipeline as a data pipeline allows serialization.", 
-            f"You are using {pipeline}",
-        )
-        return pipeline
-    
-    if isinstance(pipeline, Mapping) or pipeline is None:
-        return DataPipeline(
-            column_transforms=dict(pipeline or {}),
-        )
+    if pipeline is None:
+        pipeline = {}
 
-    if isinstance(pipeline, str):
-        if os.path.exists(pipeline):
-            return DataPipeline.from_file(pipeline)
+    if isinstance(pipeline, os.PathLike):
+        pipeline = os.fspath(pipeline)
 
-        raise FileNotFoundError(
-            "`pipeline` was a string, but no file found "
-            f"called `{pipeline}`"
+    if isinstance(pipeline, (str, Mapping)):
+        return DataPipeline.from_config(
+            pipeline,
+            cache_dir=cache_dir,
         )
 
-    raise ValueError(
-        "`pipeline` must be a dict, filename, callable, "
-        "or aspect.DataPipeline, "
-        f"but was {type(pipeline)}: {pipeline}"
+    raise TypeError(
+        "pipeline must be an Aspect DataPipeline, "
+        "a configuration mapping, or a JSON filename; "
+        f"received {type(pipeline).__name__}"
     )
 
 
@@ -122,7 +118,7 @@ def _data_len(dataset: Dataset | IterableDataset | Mapping) -> int:
     elif isinstance(dataset, Mapping):
         lens = {k: len(v) for k, v in dataset.items()}
         if len(set(lens.values())) == 1:
-            return next(lens.values())
+            return next(iter(lens.values()))
         else:
             raise AttributeError(
                 f"Column lengths of Mapping are inconsistent: {lens}"
@@ -167,13 +163,14 @@ def _matrix(
                 dataset, 
                 pipeline,
             )
+            values = dataset[column_name]
             try:
-                values = np.asarray(dataset[column_name])
+                values = np.asarray(values)
                 if values.dtype == object:
-                    values = np.stack(list(dataset[column_name]))
+                    values = np.stack(list(values))
                 values = values.reshape(_data_len(dataset), -1)
             except (TypeError, ValueError) as error:
-                raise ValueError(f"Feature {feature!r} is not a regular array") from error
+                raise ValueError(f"Feature {feature!r} is not a regular array: {dataset[column_name]}") from error
             if not np.issubdtype(values.dtype, np.number):
                 raise TypeError(f"Feature {feature!r} must be numeric, got {values.dtype}")
             group_blocks.append(values)
@@ -192,11 +189,21 @@ def _predict_map_batch(
 ) -> dict[str, ...]:
     import numpy as np
     feature_cols, target_cols = column_groups
-    x, *_ = _matrix(batch, pipeline, column_groups=(feature_cols,))
-    predicted = np.asarray(model.predict(x))
+    X, *_ = _matrix(batch, pipeline, column_groups=(feature_cols,))
+    y_pred = np.asarray(model.predict(X))
+    if y_pred.ndim == 1:
+        y_pred = y_pred[:, None]
+
+    expected_shape = (len(X), len(target_cols))
+    if y_pred.shape != expected_shape:
+        raise ValueError(
+            f"Expected predictions with shape {expected_shape}, "
+            f"received {y_pred.shape}"
+        )
+
     predicted = {
         f"{prediction_column}:{target}": p
-        for target, p in zip(target_cols, predicted.T)
+        for target, p in zip(target_cols, y_pred.T)
     }
     return batch | predicted
 
@@ -246,7 +253,10 @@ class Box:
         
         from providence import DataResolver
 
-        self.pipeline = _resolve_pipeline(pipeline)
+        self.pipeline = _resolve_pipeline(
+            pipeline,
+            cache_dir=cache_dir,
+        )
         self.model = model
         self.features = features
         self.target = target
@@ -357,16 +367,17 @@ class Box:
         **pipeline_kwargs
     ) -> None:
         """Save configuration and model state."""
+        import joblib
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
 
-        must_pickle = not hasattr(self.model, "save")
+        has_save_method = hasattr(self.model, "save") and callable(getattr(self.model, "save"))
         manifest = {
             "schema_version": self.SCHEMA_VERSION,
             "config": self.to_config(),
             "artefacts": {
-                "model_text": "model.json" if not must_pickle else None,
-                "model_binary": "model.joblib" if must_pickle else None,
+                "model_text": "model.json" if has_save_method else None,
+                "model_binary": "model.joblib",
                 "training_data": "training-data.as",
             }
         }
@@ -378,16 +389,17 @@ class Box:
             path / manifest["artefacts"]["training_data"],
             **pipeline_kwargs,
         )
-        if must_pickle:
-            import joblib
-            joblib.dump(
-                self.model, 
-                path / manifest["artefacts"]["model_binary"],
-            )
-        else:
+        joblib.dump(
+            self.model, 
+            path / manifest["artefacts"]["model_binary"],
+        )
+        if has_save_method:
             self.model.save(
                 path / manifest["artefacts"]["model_text"],
             )
+        # Write the manifest last, after both artefacts succeed.
+        save_json(manifest, path / CONFIG_FILENAME)
+        return None
 
     @classmethod
     def load(
@@ -398,36 +410,30 @@ class Box:
     ) -> "Box":
         """Restore a Box checkpoint."""
         from aspect.data import DataPipeline
+        import joblib
         path = Path(path)
-        config = load_json(path / CONFIG_FILENAME)
+        manifest = load_json(path / CONFIG_FILENAME)
+        if manifest["schema_version"] != cls.SCHEMA_VERSION:
+            raise ValueError(
+                "Unsupported Treeton checkpoint schema: "
+                f"{manifest['schema_version']}, but package is schema version {cls.SCHEMA_VERSION}"
+            )
 
-        model_config = config["config"].get("model_config")
-        features = config["config"]["features"]
-        target = config["config"]["target"]
-
+        config = manifest["config"]
+        artefacts = manifest["artefacts"]
+        model = joblib.load(
+            path / artefacts["model_binary"]
+        )
         pipeline = DataPipeline.load(
-            path / config["artefacts"]["training_data"],
+            path / artefacts["training_data"],
             cache_dir=cache_dir,
         )
-        model_filename = config["artefacts"].get("model_text")
-        from_pickle = model_config is None
-
-        if from_pickle:
-            model_filename = config["artefacts"].get("model_binary")
-        
-        if from_pickle:
-            import joblib
-            model = joblib.load(model_filename)
-        else:
-            if model_config is not None:
-                model = instantiate_object(model_config)
-                model = model.load(model_filename)
         return cls(
             model=model,
             pipeline=pipeline,
-            features=features,
-            target=target,
-            model_config=model_config,
+            features=config["features"],
+            target=config["target"],
+            model_config=config.get("model_config"),
         )
 
     def featurize(self, data, *, training: bool = False):
@@ -467,42 +473,48 @@ class Box:
         **kwargs
     ):
         """Fit the model using raw training and optional validation and test data."""
-        from aspect.data import DataPipeline
-
         training_data, pipeline = self.featurize(data, training=True)
-        if validation is not None:
-            val_data, val_pipeline = self.featurize(validation, training=False)
-            val_kwargs = {
-                "eval": tuple(
-                     *self._matrix(val_data, pipeline),
-                )
-            }
-        else:
-            val_kwargs = {}
+        X, y = self._matrix(training_data, pipeline)
+        # sklearn regressors generally expect a 1D single target.
+        if y.shape[1] == 1:
+            y = y[:, 0]
         self.model.fit(
-            *self._matrix(training_data, pipeline),
-            **val_kwargs,
+            X, y,
             **kwargs
         )
+        self._validation_score = None
+        if validation is not None and not skip_eval:
+            _, self._validation_score = self.evaluate(
+                validation,
+                metrics=metrics,
+            )
         return self
 
     def _pre_predict(
         self,
         data=None,
-        pipeline: PipelineLike | None = None
+        pipeline: PipelineLike | None = None,
     ):
-        from aspect.data import DataPipeline
+        if data is None:
+            if self.pipeline.data_in is None:
+                raise ValueError("No training data or prediction data available")
 
-        prepared = None
-        if data is None:  # use training data
-            data = self.pipeline.data_in.data
-            if not self.pipeline.data_out is None:
-                prepared = self.pipeline.data_out.data
-        if prepared is None:
-            prepared, pipeline = self.featurize(data, training=False)
-        else:
-            pipeline = self.pipeline.clone()
-        return prepared.with_format(None), pipeline
+            if pipeline is None and self.pipeline.data_out is not None:
+                return (
+                    self._unwrap(self.pipeline.data_out).with_format(None),
+                    self.pipeline.clone(),
+                )
+
+            data = self.pipeline.data_in
+
+        working_pipeline = (
+            self.pipeline.clone()
+            if pipeline is None
+            else _resolve_pipeline(pipeline).clone()
+        )
+
+        prepared = self._unwrap(working_pipeline(data))
+        return prepared.with_format(None), working_pipeline
 
     def predict(
         self,
@@ -539,46 +551,69 @@ class Box:
         data=None,
         pipeline: PipelineLike | None = None,
         *,
-        metrics: Iterable[str | Callable] | Mapping[str, str | Callable] | None = None,
-        metric_mask: Callable[[Mapping], ...] | None = None,
+        metrics=None,
+        metric_mask: Callable | None = None,
         prediction_column: str = DEFAULT_PREDICTION_COLUMN,
         batch_size: int = DEFAULT_BATCH_SIZE,
-        **kwargs
-    ) -> dict[str, ...]:
-        """Evaluate the model over a dataset using streaming metrics."""
-        from datasets import Dataset
+        **map_kwargs,
+    ):
+        """Return predicted dataset and evaluation scores."""
         if batch_size < 1:
-            raise ValueError(f"batch_size must be positive ({batch_size})")
-        metrics = _resolve_metrics(metrics)
-        prepared, pipeline = self._pre_predict(
+            raise ValueError(f"batch_size must be positive: {batch_size}")
+
+        metric_fns = _resolve_metrics(metrics)
+        prepared, working_pipeline = self._pre_predict(
             data=data,
-            pipeline=pipeline
+            pipeline=pipeline,
         )
-        if metric_mask is not None and callable(metric_mask):
-            prepared = prepared.filter(
-                metric_mask, 
-                **({"desc": "Masking" if isinstance(prepared, Dataset) else {}}),
-            )
+
+        if metric_mask is not None:
+            prepared = prepared.filter(metric_mask)
+
         predicted = prepared.map(
             _predict_map_batch,
             batched=True,
             batch_size=batch_size,
             fn_kwargs={
                 "model": self.model,
-                "pipeline": pipeline,
-                "prediction_column": prediction_column,
                 "column_groups": (self.features, self.target),
+                "pipeline": working_pipeline,
+                "prediction_column": prediction_column,
             },
             desc="Predicting",
-            **kwargs,
+            **map_kwargs,
         )
-        predicted_cols = [
-            col for col in predicted.column_names 
-            if col.startswith(prediction_column)
-        ]
-        return predicted, {
-            key: metric(
-                _matrix(predicted, pipeline, (predicted_cols,)),
-                _matrix(predicted, pipeline, (self.target,)),
-            ) for key, metric in metrics.items()
+
+        prediction_cols = tuple(
+            f"{prediction_column}:{target}"
+            for target in self.target
+        )
+
+        (y_pred,) = _matrix(
+            predicted,
+            working_pipeline,
+            (prediction_cols,),
+        )
+        (y_true,) = _matrix(
+            predicted,
+            working_pipeline,
+            (self.target,),
+        )
+
+        if y_pred.shape != y_true.shape:
+            raise ValueError(
+                f"Prediction/target shape mismatch: "
+                f"{y_pred.shape} versus {y_true.shape}"
+            )
+
+        if y_true.shape[1] == 1:
+            y_pred = y_pred[:, 0]
+            y_true = y_true[:, 0]
+
+        scores = {
+            name: fn(y_pred, y_true)
+            for name, fn in metric_fns.items()
         }
+
+        return predicted, scores
+    
