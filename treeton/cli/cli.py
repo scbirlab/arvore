@@ -21,6 +21,22 @@ def main() -> None:
         required=True,
         type=str,
     )
+    output_name = CLIOption(
+        "--output",
+        "-o",
+        required=False,
+        default=None,
+        type=str,
+        help="Where to save table",
+    )
+    checkpoint_out = CLIOption(
+        "--checkpoint",
+        "-c",
+        required=False,
+        default=None,
+        type=str,
+        help="Where to save checkpoint",
+    )
 
     config_opt = CLIOption(
         "--config",
@@ -54,6 +70,8 @@ def main() -> None:
         description="Train a model from configuration.",
         options=[
             input_name,
+            # output_name,
+            checkpoint_out,
             CLIOption(
                 "--validation",
                 "-2",
@@ -73,13 +91,6 @@ def main() -> None:
                 ),
             ),
             pipeline_opt,
-            CLIOption(
-                "--output",
-                "-o",
-                required=True,
-                type=str,
-                help="Where to save model",
-            ),
             set_opt,
             CLIOption(
                 "--cache",
@@ -98,6 +109,8 @@ def main() -> None:
         ),
         options=[
             input_name,
+            output_name,
+            checkpoint_out,
             pipeline_opt,
             CLIOption(
                 "--data",

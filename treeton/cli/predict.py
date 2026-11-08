@@ -14,6 +14,9 @@ def _predict(args: Namespace) -> None:
     from providence.io import load_json
     from providence import DataResolver
 
+    if args.checkpoint is None and args.output is None:
+        raise ValueError("Set at least one of --checkpoint and --output")
+    
     box = Box.load(
         args.checkpoint,
         cache_dir=args.cache,
@@ -32,5 +35,8 @@ def _predict(args: Namespace) -> None:
             DEFAULT_BATCH_SIZE,
         ),
     )
-    resolved = DataResolver(result, cache_dir=args.cache_dir)
-    resolved.save(args.output)
+    resolved = DataResolver(result, cache_dir=args.cache)
+    if args.checkpoint is not None:
+        resolved.save(args.checkpoint)
+    if args.output is not None:
+        resolved.write_table(args.output)

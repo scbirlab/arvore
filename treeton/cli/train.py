@@ -30,7 +30,7 @@ def _train(args: Namespace) -> None:
     )
     fit_kwargs = dict(config.get("fit", {}))
     box.fit(
-        args.training,
+        args.input_file,
         validation=args.validation,
         **fit_kwargs,
     )

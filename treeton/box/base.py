@@ -82,8 +82,12 @@ def _resolve_metrics(
             else:
                 raise TypeError(f"Metrics must be callable or str, but was {type(m)}: {m}")
             new_metrics[_m] = m
+    elif isinstance(metrics, Mapping):
+        new_metrics = dict(metrics)
+    else:
+        raise TypeError(f"Metrics must be mapping or list, but was {type(m)}: {m}")
     _metrics = {}
-    for k, v in metrics.items():
+    for k, v in new_metrics.items():
         if isinstance(v, str):
             _v = METRICS_REGISTRY.get(v)
         elif callable(v):
@@ -112,9 +116,9 @@ def _data_len(dataset: Dataset | IterableDataset | Mapping) -> int:
     if isinstance(dataset, Dataset):
         return len(dataset)
     elif isinstance(dataset, IterableDataset):
-        for i in enumerate(dataset):
+        for i, _ in enumerate(dataset):
             pass
-        return i
+        return i + 1
     elif isinstance(dataset, Mapping):
         lens = {k: len(v) for k, v in dataset.items()}
         if len(set(lens.values())) == 1:
@@ -173,7 +177,7 @@ def _matrix(
             if not np.issubdtype(values.dtype, np.number):
                 raise TypeError(f"Feature {feature!r} must be numeric, got {values.dtype}")
             group_blocks.append(values)
-        np.concatenate(group_blocks, axis=1)
+        group_blocks = np.concatenate(group_blocks, axis=1)
         blocks += (group_blocks,)
     return blocks
     
@@ -188,7 +192,7 @@ def _predict_map_batch(
 ) -> dict[str, ...]:
     import numpy as np
     feature_cols, target_cols = column_groups
-    x = _matrix(batch, pipeline, column_groups=feature_cols)
+    x, *_ = _matrix(batch, pipeline, column_groups=(feature_cols,))
     predicted = np.asarray(model.predict(x))
     predicted = {
         f"{prediction_column}:{target}": p
@@ -218,8 +222,8 @@ class Box:
         target: str | Iterable[str],
         pipeline: PipelineLike | os.PathLike | str | None = None,
         # TODO: Make type hints more specific
-        data: DataLike | None = None,
-        model_config: Mapping[str, ...] | None = None
+        model_config: Mapping[str, ...] | None = None,
+        cache_dir: str | None = None
     ):
         if isinstance(features, str):
             features = (features,)
@@ -240,10 +244,12 @@ class Box:
         ):
             raise TypeError("model must implement .fit(X, y) and .predict(X) methods")
         
+        from providence import DataResolver
+
         self.pipeline = _resolve_pipeline(pipeline)
         self.model = model
         self.features = features
-        self.data = data
+        self.target = features
 
         self.model_config = (
             _json_copy(model_config)
@@ -256,7 +262,7 @@ class Box:
     @property
     def training_data_source(self):
         """Recorded provenance for the training data."""
-        return getattr(self.pipeline.data, "data_source", None)
+        return getattr(self.pipeline.data_in, "data_source", None)
 
     def verify_training_data_source(self) -> bool | None:
         """Verify the original training-data source when possible."""
@@ -452,7 +458,7 @@ class Box:
 
     def fit(
         self,
-        data,
+        data: DataLike,
         *,
         validation=None,
         skip_eval: bool = False,
@@ -463,11 +469,6 @@ class Box:
         from aspect.data import DataPipeline
 
         training_data, pipeline = self.featurize(data, training=True)
-        train_args = (
-            self._matrix(training_data, self.features, pipeline),
-            self._matrix(training_data, self.target, pipeline),
-        )
-            
         if validation is not None:
             val_data, val_pipeline = self.featurize(validation, training=False)
             val_kwargs = {

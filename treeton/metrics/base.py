@@ -1,5 +1,4 @@
 from collections.abc import Callable
-from functools import wraps
 from carabiner.decorators import decorator_with_params
 
 DEFAULT_METRICS: tuple[str] = (
@@ -12,7 +11,7 @@ METRICS_REGISTRY: dict[str, Callable] = {}
 @decorator_with_params
 def register_metric(fn, name):
     METRICS_REGISTRY[name] = fn
-    return wraps(fn)
+    return fn
 
 @register_metric("rmsd")
 def rmsd(y_pred, y_true):
