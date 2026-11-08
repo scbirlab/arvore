@@ -36,6 +36,6 @@ def _train(args: Namespace) -> None:
     )
     save_kwargs = dict(config.get("save", {}))
     box.save(
-        args.output,
+        args.checkpoint,
         **save_kwargs,
     )

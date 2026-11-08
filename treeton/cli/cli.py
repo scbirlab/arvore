@@ -40,7 +40,6 @@ def main() -> None:
 
     config_opt = CLIOption(
         "--config",
-        "-c",
         required=True,
         type=str,
     )
@@ -63,6 +62,12 @@ def main() -> None:
         help=(
             "Pipeline definition to use to override box.pipeline."
         ),
+    )
+    cache_opt = CLIOption(
+        "--cache",
+        default=None,
+        type=str,
+        help="Cache directory for data loading and preprocessing.",
     )
 
     train = CLICommand(
@@ -92,12 +97,7 @@ def main() -> None:
             ),
             pipeline_opt,
             set_opt,
-            CLIOption(
-                "--cache",
-                default=None,
-                type=str,
-                help="Cache directory for data loading and preprocessing.",
-            ),
+            cache_opt,
         ],
         main=_train,
     )
@@ -123,17 +123,7 @@ def main() -> None:
                 "default": None,
             }),
             set_opt,
-            CLIOption(
-                "--output",
-                "-o",
-                required=True,
-                type=str,
-            ),
-            CLIOption(
-                "--cache",
-                default=None,
-                type=str,
-            ),
+            cache_opt,
         ],
         main=_predict,
     )

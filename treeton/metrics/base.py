@@ -13,12 +13,12 @@ def register_metric(fn, name):
     METRICS_REGISTRY[name] = fn
     return fn
 
-@register_metric("rmsd")
+@register_metric(name="rmsd")
 def rmsd(y_pred, y_true):
     import numpy as np
     return np.sqrt(np.mean(np.square(y_pred - y_true)))
 
-@register_metric("mae")
+@register_metric(name="mae")
 def mae(y_pred, y_true):
     import numpy as np
     return np.mean(np.abs(y_pred - y_true))

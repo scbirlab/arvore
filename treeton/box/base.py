@@ -249,7 +249,7 @@ class Box:
         self.pipeline = _resolve_pipeline(pipeline)
         self.model = model
         self.features = features
-        self.target = features
+        self.target = target
 
         self.model_config = (
             _json_copy(model_config)
@@ -347,7 +347,7 @@ class Box:
         }
         if path is not None:
             path = Path(path)
-            path.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             save_json(config, path)
         return config
 
@@ -360,7 +360,7 @@ class Box:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
 
-        must_pickle = hasattr(self.model, "save")
+        must_pickle = not hasattr(self.model, "save")
         manifest = {
             "schema_version": self.SCHEMA_VERSION,
             "config": self.to_config(),
@@ -432,6 +432,7 @@ class Box:
 
     def featurize(self, data, *, training: bool = False):
         """Apply the DataPipeline."""
+        from aspect import DataPipeline
         if not isinstance(self.pipeline, DataPipeline):
             raise TypeError(
                 "Box.featurize() requires an "
@@ -577,7 +578,7 @@ class Box:
         ]
         return predicted, {
             key: metric(
-                _matrix(prepared, pipeline, predicted_cols),
-                _matrix(prepared, pipeline, self.target),
+                _matrix(predicted, pipeline, (predicted_cols,)),
+                _matrix(predicted, pipeline, (self.target,)),
             ) for key, metric in metrics.items()
         }
