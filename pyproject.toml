@@ -1,6 +1,6 @@
 [project]
 name = "treeton"
-version = "0.0.1"
+version = "0.0.2"
 authors = [
   { name="Eachan Johnson", email="eachan.johnson@crick.ac.uk" },
 ]
@@ -47,11 +47,14 @@ dependencies = [
 [project.optional-dependencies]
 chem = ["schemist>=0.0.7"]
 bio = ["vectome>=0.0.7"]
+cat = ["catboost>=1.2"]
+lgbm = ["lightgbm[arrow,scikit-learn,plotting]>=4.0"]
 xgb = ["xgboost_cpu"]
 xgb_cuda12 = ["xgboost-cu12"]
 xgb_cuda13 = ["xgboost>=3.0"]
-lgbm = ["lightgbm[arrow,scikit-learn,plotting]>=4.0"]
-dev = ["treeton[chem,bio,xgb]", "pytest>=7.4", "flake8"]
+#trees = ["treeton[xgb,lgbm,cat]"]
+trees = ["treeton[xgb,lgbm]"]
+dev = ["treeton[chem,bio,trees]", "pytest>=7.4", "flake8"]
 
 [project.urls]
 "Homepage" = "https://github.com/scbirlab/treeton"

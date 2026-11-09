@@ -104,3 +104,69 @@ def test_cli_train_predict(tmp_path):
     assert np.isfinite(
         predictions["prediction:y"]
     ).all()
+
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "class_path,init_args,dependency",
+    [
+        (
+            "sklearn.ensemble.RandomForestRegressor",
+            {"n_estimators": 10, "random_state": 42},
+            "sklearn",
+        ),
+        (
+            "xgboost.XGBRegressor",
+            {
+                "n_estimators": 30,
+                "n_jobs": 1,
+                "random_state": 42,
+            },
+            "xgboost",
+        ),
+        (
+            "lightgbm.LGBMRegressor",
+            {
+                "n_estimators": 30,
+                "min_child_samples": 2,
+                "verbosity": -1,
+                "n_jobs": 1,
+            },
+            "lightgbm",
+        ),
+        (
+            "catboost.CatBoostRegressor",
+            {
+                "iterations": 30,
+                "verbose": False,
+                "thread_count": 1,
+            },
+            "catboost",
+        ),
+    ],
+)
+def test_backend_box_fit(
+    tmp_path, class_path, init_args, dependency
+):
+    pytest.importorskip(dependency)
+
+    training, testing = make_data(tmp_path)
+
+    config = make_config()
+    config["model"] = {
+        "class_path": class_path,
+        "init_args": init_args,
+    }
+
+    box = Box.from_config(config)
+    box.fit(str(training))
+
+    predictions = np.asarray(
+        box.predict(str(testing))["prediction:y"]
+    )
+
+    assert predictions.shape == (3,)
+    assert np.isfinite(predictions).all()
