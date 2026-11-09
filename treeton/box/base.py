@@ -470,24 +470,69 @@ class Box:
         validation=None,
         skip_eval: bool = False,
         metrics: Iterable[str | Callable] | Mapping[str, str | Callable] | None = None,
+        use_validation_for_fit: bool = False,
+        early_stopping_rounds: int | None = None,
         **kwargs
     ):
         """Fit the model using raw training and optional validation and test data."""
-        training_data, pipeline = self.featurize(data, training=True)
+        from ..models import get_fit_adapter
+
+        training_data, pipeline = self.featurize(
+            data, 
+            training=True,
+        )
         X, y = self._matrix(training_data, pipeline)
         # sklearn regressors generally expect a 1D single target.
         if y.shape[1] == 1:
             y = y[:, 0]
-        self.model.fit(
-            X, y,
-            **kwargs
+        if early_stopping_rounds is not None and not use_validation_for_fit:
+            raise ValueError(
+                "early_stopping_rounds requires "
+                "use_validation_for_fit=True"
+            )
+
+        fit_validation = None
+
+        if use_validation_for_fit:
+            if validation is None:
+                raise ValueError(
+                    "use_validation_for_fit=True requires validation data"
+                )
+
+            # Clone the fitted Aspect pipeline for validation.
+            validation_data, validation_pipeline = self.featurize(
+                validation,
+                training=False,
+            )
+
+            X_val, y_val = self._matrix(
+                validation_data,
+                validation_pipeline,
+            )
+
+            if y_val.shape[1] == 1:
+                y_val = y_val[:, 0]
+
+            fit_validation = (X_val, y_val)
+
+        adapter = get_fit_adapter(self.model)
+        adapter.fit(
+            self.model,
+            X,
+            y,
+            validation=fit_validation,
+            fit_kwargs=kwargs,
+            early_stopping_rounds=early_stopping_rounds,
         )
+
         self._validation_score = None
+
         if validation is not None and not skip_eval:
             _, self._validation_score = self.evaluate(
                 validation,
                 metrics=metrics,
             )
+
         return self
 
     def _pre_predict(
