@@ -420,7 +420,7 @@ class Box:
                     "Pass allow_unsafe=True only for trusted files."
                 )
             model = joblib.load(
-                path / artefacts["model_binary"]
+                path / manifest["artefacts"]["model_binary"]
             )
 
         else:
