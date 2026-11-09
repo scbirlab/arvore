@@ -1,6 +1,6 @@
 [project]
 name = "treeton"
-version = "0.0.1"
+version = "0.0.2"
 authors = [
   { name="Eachan Johnson", email="eachan.johnson@crick.ac.uk" },
 ]
@@ -53,7 +53,7 @@ xgb = ["xgboost_cpu"]
 xgb_cuda12 = ["xgboost-cu12"]
 xgb_cuda13 = ["xgboost>=3.0"]
 trees = ["treeton[xgb,lgbm,cat]"]
-dev = ["treeton[che,bio,trees]", "pytest>=7.4", "flake8"]
+dev = ["treeton[chem,bio,trees]", "pytest>=7.4", "flake8"]
 
 [project.urls]
 "Homepage" = "https://github.com/scbirlab/treeton"
