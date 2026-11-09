@@ -52,6 +52,7 @@ lgbm = ["lightgbm[arrow,scikit-learn,plotting]>=4.0"]
 xgb = ["xgboost_cpu"]
 xgb_cuda12 = ["xgboost-cu12"]
 xgb_cuda13 = ["xgboost>=3.0"]
+#trees = ["treeton[xgb,lgbm,cat]"]
 trees = ["treeton[xgb,lgbm,cat]"]
 dev = ["treeton[chem,bio,trees]", "pytest>=7.4", "flake8"]
 
