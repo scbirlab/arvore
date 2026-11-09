@@ -220,7 +220,7 @@ class Box:
 
     """
 
-    SCHEMA_VERSION: int = 1
+    SCHEMA_VERSION: int = 2
 
     def __init__(
         self,
@@ -364,40 +364,31 @@ class Box:
     def save(
         self, 
         path: str | os.PathLike,
+        allow_unsafe: bool = False,
         **pipeline_kwargs
     ) -> None:
         """Save configuration and model state."""
+        from ..models.codecs import save_model
         import joblib
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
-
-        has_save_method = hasattr(self.model, "save") and callable(getattr(self.model, "save"))
         manifest = {
             "schema_version": self.SCHEMA_VERSION,
             "config": self.to_config(),
+            "model": model_metadata,
             "artefacts": {
-                "model_text": "model.json" if has_save_method else None,
-                "model_binary": "model.joblib",
                 "training_data": "training-data.as",
             }
         }
-        
-        config = self.to_config()
-        save_json(config, path / CONFIG_FILENAME)
-
+        model_metadata = save_model(
+            self.model,
+            path,
+            allow_unsafe=allow_unsafe,
+        )
         self.pipeline.save(
-            path / manifest["artefacts"]["training_data"],
+            path / manifest["artefects"]["training_data"],
             **pipeline_kwargs,
         )
-        joblib.dump(
-            self.model, 
-            path / manifest["artefacts"]["model_binary"],
-        )
-        if has_save_method:
-            self.model.save(
-                path / manifest["artefacts"]["model_text"],
-            )
-        # Write the manifest last, after both artefacts succeed.
         save_json(manifest, path / CONFIG_FILENAME)
         return None
 
@@ -405,25 +396,42 @@ class Box:
     def load(
         cls,
         path: str | os.PathLike,
+        allow_unsafe: bool = False,
         *,
         cache_dir: str | None = None
     ) -> "Box":
         """Restore a Box checkpoint."""
         from aspect.data import DataPipeline
+        from ..models.codecs import load_model
         import joblib
+
         path = Path(path)
         manifest = load_json(path / CONFIG_FILENAME)
-        if manifest["schema_version"] != cls.SCHEMA_VERSION:
-            raise ValueError(
-                "Unsupported Treeton checkpoint schema: "
-                f"{manifest['schema_version']}, but package is schema version {cls.SCHEMA_VERSION}"
+        schema = manifest["schema_version"]
+        if schema == 1:
+            if not allow_unsafe:
+                raise ValueError(
+                    "Legacy schema-1 checkpoints use joblib. "
+                    "Pass allow_unsafe=True only for trusted files."
+                )
+            model = joblib.load(
+                path / artefacts["model_binary"]
             )
 
-        config = manifest["config"]
+        else:
+            if schema != cls.SCHEMA_VERSION:
+                raise ValueError(
+                    "Unsupported Treeton checkpoint schema: "
+                    f"{manifest['schema_version']}, but package is schema version {cls.SCHEMA_VERSION}"
+                )
+            model = load_model(
+                path,
+                manifest["model"],
+                allow_unsafe=allow_unsafe,
+                trusted_types=trusted_types,
+            )
         artefacts = manifest["artefacts"]
-        model = joblib.load(
-            path / artefacts["model_binary"]
-        )
+        config = manifest["config"]
         pipeline = DataPipeline.load(
             path / artefacts["training_data"],
             cache_dir=cache_dir,

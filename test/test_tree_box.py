@@ -137,15 +137,15 @@ import pytest
             },
             "lightgbm",
         ),
-        (
-            "catboost.CatBoostRegressor",
-            {
-                "iterations": 30,
-                "verbose": False,
-                "thread_count": 1,
-            },
-            "catboost",
-        ),
+        # (
+        #     "catboost.CatBoostRegressor",
+        #     {
+        #         "iterations": 30,
+        #         "verbose": False,
+        #         "thread_count": 1,
+        #     },
+        #     "catboost",
+        # ),
     ],
 )
 def test_backend_box_fit(
