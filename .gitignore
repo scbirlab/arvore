@@ -18,6 +18,8 @@ Hello.txt
 /test/*.png
 /test/outputs/
 
+catboost_info/
+
 /test/scripts/outputs/
 __pycache__/
 lightning_logs/
