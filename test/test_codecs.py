@@ -79,7 +79,11 @@ def test_prediction_roundtrip(tmp_path, data, backend):
 
     expected = model.predict(Xv)
     metadata = save_model(model, tmp_path)
-    restored = load_model(tmp_path, metadata)
+    restored = load_model(
+        tmp_path, 
+        metadata, 
+        trusted_types=("sklearn.tree._tree.Tree",),
+    )
 
     actual = restored.predict(Xv)
 

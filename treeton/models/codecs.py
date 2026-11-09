@@ -34,7 +34,10 @@ class ModelCodec(Protocol):
     def save(self, model: Any, path: Path) -> None: ...
 
     def load(
-        self, path: Path, *, trusted: tuple[str, ...] = ()
+        self, 
+        path: Path, 
+        *, 
+        trusted: tuple[str, ...] = ()
     ) -> Any: ...
 
 
@@ -116,12 +119,8 @@ class SkopsCodec:
     def load(self, path, *, trusted=()):
         import skops.io as sio
 
-        safe_types = {
-            "sklearn.tree._tree.Tree",
-        }
-
         unknown = sio.get_untrusted_types(file=path)
-        disallowed = set(unknown) - safe_types - set(trusted)
+        disallowed = set(unknown) - set(trusted)
         if disallowed:
             raise ValueError(
                 "Untrusted model types in skops checkpoint: "

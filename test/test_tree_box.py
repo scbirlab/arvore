@@ -62,7 +62,10 @@ def test_box_checkpoint_roundtrip(tmp_path):
     assert (checkpoint / manifest["model"]["filename"]).is_file()
     assert (checkpoint / "training-data.as").is_dir()
 
-    restored = Box.load(checkpoint)
+    restored = Box.load(
+        checkpoint,
+        trusted_types=("sklearn.tree._tree.Tree",),
+    )
 
     after = np.asarray(
         restored.predict(str(testing))["prediction:y"]
@@ -94,6 +97,7 @@ def test_cli_train_predict(tmp_path):
     subprocess.run(
         [
             "treeton", "predict", str(checkpoint),
+            "--trust-sklearn-trees",
             "--data", str(testing),
             "--output", str(output),
         ],
