@@ -49,7 +49,7 @@ treeton train \
 HF_HOME="$CACHE" \
 treeton predict \
     "$OUTPUT/model.tt" \
-    --allow-sklearn-trees \
+    --trust-sklearn-trees \
     --data "$TRAIN" \
     --start "$START" \
     --stop "$STOP" \
