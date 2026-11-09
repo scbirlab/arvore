@@ -146,7 +146,9 @@ class LightGBMAdapter:
             )
 
         if validation is not None:
-            kw["eval_set"] = [validation]
+            X_val, y_val = validation
+            kw["eval_X"] = X_val
+            kw["eval_y"] = y_val
 
         if callbacks:
             kw["callbacks"] = callbacks

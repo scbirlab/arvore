@@ -106,35 +106,31 @@ def test_checksum_rejection(tmp_path, data):
         load_model(tmp_path, metadata)
 
 
+
+class CustomRegressor:
+    """Unsupported estimator for testing unsafe serialization."""
+
+    def fit(self, X, y):
+        self.mean_ = float(np.mean(y))
+        return self
+
+    def predict(self, X):
+        return np.full(len(X), self.mean_)
+
+
 def test_unsafe_joblib_is_opt_in(tmp_path, data):
     X, y, *_ = data
 
-    class Dummy:
-        def fit(self, X, y):
-            self.mean = float(np.mean(y))
-            return self
+    model = CustomRegressor().fit(X, y)
 
-        def predict(self, X):
-            return np.full(len(X), self.mean)
-
-    # A local test class may not be pickleable, so use
-    # a lambda-bearing built-in estimator wrapper instead
-    # when exercising the actual joblib fallback.
-    from sklearn.pipeline import Pipeline
-    from sklearn.preprocessing import FunctionTransformer
-
-    model = Pipeline([
-        ("transform", FunctionTransformer(np.abs)),
-        ("regressor", RandomForestRegressor(n_estimators=5)),
-    ])
-    model.fit(X, y)
-
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="No supported codec"):
         save_model(model, tmp_path)
 
     metadata = save_model(
         model, tmp_path, allow_unsafe=True
     )
+
+    assert metadata["codec"] == "joblib"
 
     with pytest.raises(ValueError, match="allow_unsafe"):
         load_model(tmp_path, metadata)
@@ -147,3 +143,4 @@ def test_unsafe_joblib_is_opt_in(tmp_path, data):
         model.predict(X),
         restored.predict(X),
     )
+

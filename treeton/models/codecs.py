@@ -9,6 +9,24 @@ from pathlib import Path
 from typing import Any, Protocol
 
 
+
+def _backend_version(codec_name: str) -> str:
+    """Return the version of the installed codec backend."""
+    from importlib import import_module
+
+    module_name = {
+        "xgboost": "xgboost",
+        "lightgbm": "lightgbm",
+        "catboost": "catboost",
+        "skops": "skops",
+        "joblib": "joblib",
+    }[codec_name]
+
+    module = import_module(module_name)
+    return module.__version__
+
+
+
 class ModelCodec(Protocol):
     name: str
     filename: str
@@ -98,15 +116,22 @@ class SkopsCodec:
     def load(self, path, *, trusted=()):
         import skops.io as sio
 
+        safe_types = {
+            "sklearn.tree._tree.Tree",
+        }
+
         unknown = sio.get_untrusted_types(file=path)
-        disallowed = set(unknown) - set(trusted)
+        disallowed = set(unknown) - safe_types - set(trusted)
         if disallowed:
             raise ValueError(
                 "Untrusted model types in skops checkpoint: "
                 f"{sorted(disallowed)}. Review these types "
                 "before explicitly trusting them."
             )
-        return sio.load(path, trusted=list(trusted))
+        return sio.load(
+            path, 
+            trusted=list(trusted),
+        )
 
 
 class JoblibCodec:
@@ -187,7 +212,7 @@ def save_model(
         "codec": codec.name,
         "filename": codec.filename,
         "class_path": _class_path(model),
-        "version": version(PACKAGES[codec.name]),
+        "version": _backend_version(PACKAGES[codec.name]),
         "sha256": sha256(path.read_bytes()).hexdigest(),
         "trainable": codec.name != "lightgbm",
     }
@@ -198,7 +223,7 @@ def load_model(
     metadata,
     *,
     allow_unsafe=False,
-    trusted_types=(),
+    trusted_types=()
 ):
     directory = Path(directory)
     name = metadata["codec"]

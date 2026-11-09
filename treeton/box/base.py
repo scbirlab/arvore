@@ -372,6 +372,13 @@ class Box:
         import joblib
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
+
+        model_metadata = save_model(
+            self.model,
+            path,
+            allow_unsafe=allow_unsafe,
+        )
+        
         manifest = {
             "schema_version": self.SCHEMA_VERSION,
             "config": self.to_config(),
@@ -380,13 +387,8 @@ class Box:
                 "training_data": "training-data.as",
             }
         }
-        model_metadata = save_model(
-            self.model,
-            path,
-            allow_unsafe=allow_unsafe,
-        )
         self.pipeline.save(
-            path / manifest["artefects"]["training_data"],
+            path / manifest["artefacts"]["training_data"],
             **pipeline_kwargs,
         )
         save_json(manifest, path / CONFIG_FILENAME)
@@ -398,6 +400,7 @@ class Box:
         path: str | os.PathLike,
         allow_unsafe: bool = False,
         *,
+        trusted_types: Iterable[str] | None = None,
         cache_dir: str | None = None
     ) -> "Box":
         """Restore a Box checkpoint."""
@@ -408,6 +411,8 @@ class Box:
         path = Path(path)
         manifest = load_json(path / CONFIG_FILENAME)
         schema = manifest["schema_version"]
+        if trusted_types is None:
+            trusted_types = ()
         if schema == 1:
             if not allow_unsafe:
                 raise ValueError(
