@@ -36,7 +36,15 @@ def main() -> None:
         type=str,
         help="Where to save checkpoint",
     )
-
+    allow_trees = CLIOption(
+        "--trust-sklearn-trees",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow loading sklearn Tree objects from "
+            "trusted checkpoints."
+        ),
+    )
     config_opt = CLIOption(
         "--config",
         required=True,
@@ -125,6 +133,7 @@ def main() -> None:
         ),
         options=[
             input_name,
+            allow_trees,
             start,
             stop,
             output_name,

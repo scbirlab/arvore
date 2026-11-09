@@ -21,6 +21,11 @@ def _predict(args: Namespace) -> None:
     box = Box.load(
         args.input_file,
         cache_dir=args.cache,
+        trusted_types=(
+            ("sklearn.tree._tree.Tree",)
+            if args.trust_sklearn_trees
+            else ()
+        ),
     )
     config = (
         load_json(args.config)
