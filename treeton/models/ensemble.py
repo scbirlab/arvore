@@ -1,6 +1,7 @@
 """Composable regression ensembles."""
 
 from collections.abc import Callable, Mapping, Iterable
+from copy import deepcopy
 from math import isfinite
 from pathlib import Path
 import os
@@ -75,6 +76,7 @@ class Ensemble:
             raise ValueError(
                 "Weights must be positive and finite"
             )
+        self._config = None
 
     @classmethod
     def repeat(
@@ -122,80 +124,98 @@ class Ensemble:
     def __len__(self):
         return len(self.members)
 
-    def to_config(
-        self,
-        path: Mapping[str, ...] | str | os.PathLike | None
-    ):
-        """Instantiate a single estimator or declarative ensemble."""
-        from ..config import instantiate_object
+    @property
+    def has_config(self) -> bool:
+        return self._config is not None
 
-        config = {
-            "kind": "ensemble", 
-            "schema_version": self.SCHEMA_VERSION,
-            "weights": list(self.weights),
-            "members": {},
-        }
+    def _attach_config(self, config):
+        """Attach a declarative specification without replacing an existing one."""
+        from copy import deepcopy
 
-        for name, member in self.members.items():
-            config["members"][name] = f"{member.__module__}.{member.__qualname__}"
+        config = deepcopy(dict(config))
+
+        if self._config is not None and self._config != config:
+            raise ValueError(
+                "Model configuration conflicts with the "
+                "ensemble's existing specification"
+            )
+
+        self._config = config
+
+    def to_config(self, path=None):
+        """Return the original declarative model specification."""
+        if self._config is None:
+            raise ValueError(
+                "This ensemble was constructed from Python estimators "
+                "and has no declarative configuration."
+            )
+
+        config = deepcopy(self._config)
+
         if path is not None:
             from providence.io import save_json
             save_json(config, path)
+
         return config
 
     @classmethod
-    def from_config(
-        cls,
-        config: Mapping[str, ...] | str | os.PathLike
-    ):
-        """Instantiate a single estimator or declarative ensemble."""
+    def from_config(cls, config):
+        """Construct an ensemble, retaining its model specification."""
         from ..config import instantiate_object
+        from providence.io import load_json
 
-        if isinstance(config, str):
-            from providence.io import load_json
-            path = Path(config)
-            if not path.exists():
-                raise FileNotFoundError(f"Config file {path} not found")
-            config = load_json(config)
+        if isinstance(config, (str, os.PathLike)):
+            config = load_json(str(config))
+
         if not isinstance(config, Mapping):
-            raise ValueError("Config must be a dict or mapping")
+            raise TypeError("Config must be a mapping or filename")
 
-        schema = config.get("schema_version")
-        if schema != cls.SCHEMA_VERSION:
-            raise ValueError(
-                "Unsupported ensemble checkpoint schema: "
-                f"version is {schema} but package is {cls.SCHEMA_VERSION}"
-            )
+        config = deepcopy(dict(config))
         kind = config.get("kind")
 
         if kind is None:
-            return cls(instantiate_object(config))
+            # Backward compatibility: ordinary estimator configs.
+            ensemble = cls(instantiate_object(config))
 
-        if kind != "ensemble":
-            raise ValueError(f"Unknown model kind: {kind}")
+        elif kind == "ensemble":
+            schema = config.get("schema_version", 1)
 
-        if "members" in config:
-            if "base" in config or "n_members" in config:
+            if schema != cls.SCHEMA_VERSION:
                 raise ValueError(
-                    "Use either members or base/n_members"
+                    f"Unsupported ensemble schema: {schema}"
                 )
 
-            return cls({
-                name: instantiate_object(spec)
-                for name, spec in config["members"].items()
-            }, weights=config.get("weights"))
-        elif "base" in config:
-            models = instantiate_object(config["base"])
-            return cls.repeat(
-                models,
-                n=config.get("n_members", 1),
-                seed=config.get("seed", DEFAULT_SEED),
-                weights=config.get("weights"),
-            )
+            if "members" in config:
+                if "base" in config or "n_members" in config:
+                    raise ValueError(
+                        "Use either members or base/n_members"
+                    )
+
+                ensemble = cls(
+                    {
+                        name: instantiate_object(spec)
+                        for name, spec in config["members"].items()
+                    },
+                    weights=config.get("weights"),
+                )
+
+            elif "base" in config:
+                ensemble = cls.repeat(
+                    instantiate_object(config["base"]),
+                    n=config.get("n_members", 1),
+                    seed=config.get("seed", DEFAULT_SEED),
+                    weights=config.get("weights"),
+                )
+
+            else:
+                raise ValueError(
+                    "Ensemble requires base or members"
+                )
         else:
-            raise ValueError(
-                "Ensemble config requires base or members"
-            )
+            raise ValueError(f"Unknown model kind: {kind}")
+
+        ensemble._config = deepcopy(config)
+        return ensemble
 
     def save(
         self, 
@@ -210,6 +230,11 @@ class Ensemble:
             "schema_version": self.SCHEMA_VERSION,
             "weights": list(self.weights),
             "members": [],
+            "config": (
+                self.to_config()
+                if self.has_config
+                else None
+            ),
         }
 
         for index, (name, member) in enumerate(self.members.items()):
@@ -351,7 +376,7 @@ class Ensemble:
         else:
             prediction = members
 
-        if prediction.shape[1] == 1:
+        if not disaggregate and prediction.shape[1] == 1:
             return prediction[:, 0]
 
         return prediction

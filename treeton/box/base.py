@@ -265,12 +265,32 @@ class Box:
         self.features = features
         self.target = target
 
-        self.model_config = (
-            _json_copy(model_config)
-            if model_config is not None
+        from ..models.ensemble import Ensemble
+
+        self._model_config_fallback = None
+
+        if isinstance(self.model, Ensemble):
+            if model_config is not None:
+                self.model._attach_config(model_config)
+        elif model_config is not None:
+            # Compatibility with arbitrary, non-Ensemble estimators.
+            self._model_config_fallback = _json_copy(model_config)
+        self._validation_score = None
+
+    @property
+    def model_config(self):
+        from ..models.ensemble import Ensemble
+        if isinstance(self.model, Ensemble):
+            return (
+                self.model.to_config()
+                if self.model.has_config
+                else None
+            )
+        return (
+            _json_copy(self._model_config_fallback)
+            if self._model_config_fallback is not None
             else None
         )
-        self._validation_score = None
 
 
     @property
@@ -333,7 +353,6 @@ class Box:
             features=config.get("features", []),
             target=config.get("target", []),
             pipeline=pipeline,
-            model_config=model_config,
         )
 
     def to_config(
@@ -352,11 +371,7 @@ class Box:
 
         config = {
             "schema_version": self.SCHEMA_VERSION,
-            "model_config": (
-                _json_copy(self.model_config)
-                if self.model_config is not None
-                else None
-            ),
+            "model_config": self.model_config,
             "pipeline": self.pipeline.to_config(),
             "features": list(self.features),
             "target": list(self.target),
@@ -384,10 +399,17 @@ class Box:
             path,
             allow_unsafe=allow_unsafe,
         )
+        from ..models.ensemble import Ensemble
+
+        config = self.to_config()
+
+        if isinstance(self.model, Ensemble):
+            # The ensemble codec persists its own configuration.
+            config["model_config"] = None
         
         manifest = {
             "schema_version": self.SCHEMA_VERSION,
-            "config": self.to_config(),
+            "config": config,
             "model": model_metadata,
             "artefacts": {
                 "training_data": "training-data.as",

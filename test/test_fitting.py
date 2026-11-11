@@ -1,4 +1,3 @@
-
 """Tests for tree estimator fit adapters."""
 
 import numpy as np
@@ -12,7 +11,7 @@ from treeton.models import (
     XGBoostAdapter,
     LightGBMAdapter,
     CatBoostAdapter,
-    get_fit_adapter,
+    get_adapter,
 )
 
 

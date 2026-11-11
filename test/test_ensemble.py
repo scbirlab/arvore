@@ -12,6 +12,8 @@ from treeton import Box, Ensemble
 from treeton.models.codecs import save_model, load_model
 from treeton.models.ensemble import Ensemble
 
+TRUSTED_SKLEARN_TYPES = ("sklearn.tree._tree.Tree",)
+
 
 @pytest.fixture
 def regression_data():
@@ -87,7 +89,11 @@ def test_ensemble_codec_roundtrip(tmp_path, regression_data):
         tmp_path / "members" / "0000" / "model.skops"
     ).exists()
 
-    restored = load_model(tmp_path, metadata)
+    restored = load_model(
+        tmp_path, 
+        metadata,
+        trusted_types=TRUSTED_SKLEARN_TYPES,
+    )
 
     assert list(restored.members) == list(model.members)
 
@@ -103,7 +109,11 @@ def test_ensemble_codec_roundtrip(tmp_path, regression_data):
     member_file.write_bytes(member_file.read_bytes() + b"corrupt")
 
     with pytest.raises(ValueError, match="checksum"):
-        load_model(tmp_path, metadata)
+        load_model(
+            tmp_path, 
+            metadata, 
+            trusted_types=TRUSTED_SKLEARN_TYPES,
+        )
 
 
 def test_declarative_ensemble(regression_data):
@@ -159,7 +169,10 @@ def test_box_checkpoint(tmp_path):
     path = tmp_path / "box"
     box.save(path)
 
-    restored = Box.load(path)
+    restored = Box.load(
+        path,
+        trusted_types=TRUSTED_SKLEARN_TYPES,
+    )
     after = restored.predict(data)
 
     np.testing.assert_allclose(
@@ -193,12 +206,51 @@ def test_mixed_backend_codec(tmp_path, regression_data):
     ] == ["skops", "xgboost"]
 
     assert (
-        tmp_path / "members" / "xgb" / "model.ubj"
+        tmp_path / "members" / "0001" / "model.ubj"
     ).exists()
 
-    restored = load_model(tmp_path, metadata)
+    restored = load_model(
+        tmp_path, 
+        metadata, 
+        trusted_types=TRUSTED_SKLEARN_TYPES,
+    )
 
     np.testing.assert_allclose(
         model.predict(X),
         restored.predict(X),
     )
+    
+
+def test_ensemble_config_roundtrip():
+    config = {
+        "kind": "ensemble",
+        "schema_version": 1,
+        "base": {
+            "class_path": "sklearn.ensemble.RandomForestRegressor",
+            "init_args": {"n_estimators": 10},
+        },
+        "n_members": 3,
+        "seed": 42,
+    }
+
+    ensemble = Ensemble.from_config(config)
+
+    assert ensemble.to_config() == config
+
+    # Returned configurations must not be live references.
+    restored = ensemble.to_config()
+    restored["base"]["init_args"]["n_estimators"] = 999
+
+    assert ensemble.to_config() == config
+
+
+def test_single_estimator_config_roundtrip():
+    config = {
+        "class_path": "sklearn.ensemble.RandomForestRegressor",
+        "init_args": {"n_estimators": 10},
+    }
+
+    ensemble = Ensemble.from_config(config)
+
+    assert len(ensemble) == 1
+    assert ensemble.to_config() == config

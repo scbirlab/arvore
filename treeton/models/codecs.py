@@ -240,6 +240,7 @@ def save_model(
 
     codec = get_model_codec(
         model,
+        allow_unsafe=kwargs.get("allow_unsafe", False),
     )
     path = path / codec.filename
     if not skip_save:
@@ -295,5 +296,6 @@ def load_model(
     return codec.load(
         path, 
         trusted=tuple(trusted_types),
+        allow_unsafe=allow_unsafe,
         **kwargs
     )
