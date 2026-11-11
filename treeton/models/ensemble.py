@@ -132,15 +132,15 @@ class Ensemble:
         config = {
             "kind": "ensemble", 
             "schema_version": self.SCHEMA_VERSION,
-            "weights": list(self.model.weights),
+            "weights": list(self.weights),
             "members": {},
         }
 
         for name, member in self.members.items():
             config["members"][name] = f"{member.__module__}.{member.__qualname__}"
         if path is not None:
-            from providence.io import write_json
-            write_json(config, path)
+            from providence.io import save_json
+            save_json(config, path)
         return config
 
     @classmethod
@@ -203,18 +203,18 @@ class Ensemble:
         *, 
         allow_unsafe: bool = False
     ):
-        from providence.io import write_json
+        from providence.io import save_json
         from .codecs import save_model
         path = Path(path)
         manifest = {
             "schema_version": self.SCHEMA_VERSION,
-            "weights": list(self.model.weights),
+            "weights": list(self.weights),
             "members": [],
         }
 
-        for index, (name, member) in enumerate(self.model.members.items()):
+        for index, (name, member) in enumerate(self.members.items()):
             directory = (
-                path.parent / "members" / f"{name}"
+                path.parent / "members" / f"{index:04d}"
             )
             # Use the existing codec dispatcher, including
             # backend-native formats and safety controls.
@@ -227,7 +227,7 @@ class Ensemble:
                 "name": name,
                 "metadata": metadata,
             })
-        write_json(manifest, path)
+        save_json(manifest, path)
         return None
 
     @classmethod
@@ -269,7 +269,7 @@ class Ensemble:
                     "Nested ensemble checkpoints are unsupported"
                 )
             directory = (
-                path.parent / "members" / f"{name}"
+                path.parent / "members" / f"{index:04d}"
             )
             members[name] = load_model(
                 directory,
@@ -283,35 +283,76 @@ class Ensemble:
             weights=manifest["weights"],
         )
 
-    def fit(self, X, y, **kwargs):
+    def fit(self, X, y, validation=None, **kwargs):
         """Fit through member-specific adapters."""
         from .adapters import get_adapter
 
-        get_adapter(self).fit(
-            self, 
-            X, 
-            y, 
-            fit_kwargs=kwargs,
-        )
+        for member in self.members.values():
+            adapter = get_adapter(member)
+            adapter.fit(
+                member,
+                X,
+                y,
+                validation=validation,
+                **kwargs,
+            )
         return self
 
-    def predict(
+    def predict_members(
+        self, 
+        X,
+        **kwargs
+    ):
+        import numpy as np
+        from .adapters import get_adapter
+
+        predictions = []
+
+        for name, member in self.members.items():
+            adapter = get_adapter(member)
+            prediction = np.asarray(
+                adapter.predict(member, X, **kwargs),
+                dtype=float,
+            )
+
+            if prediction.ndim == 1:
+                prediction = prediction[:, None]
+
+            if prediction.ndim != 2 or prediction.shape[0] != len(X):
+                raise ValueError(
+                    f"Invalid prediction shape for {name!r}: "
+                    f"{prediction.shape}"
+                )
+
+            if predictions and prediction.shape != predictions[0].shape:
+                raise ValueError(
+                    f"Incompatible prediction shape for {name!r}"
+                )
+            predictions.append(prediction)
+        return np.stack(predictions, axis=1)
+
+    def predict( 
         self, 
         X, 
         *, 
-        aggregate=str | Callable | None, 
+        disaggregate: bool = False, 
         **kwargs
     ):
-        """Return aggregated predictions."""
-        from .adapters import get_adapter
-        
-        predictions = get_adapter(self).predict(
-            self, 
-            X,
-            aggregate=aggregate,
-            **kwargs,
-        )
-        if predictions.shape[-1] == 1:
-            predictions = predictions[:, :, 0]
-        return predictions
+        import numpy as np
+
+        members = self.predict_members(X, **kwargs)
+
+        if not disaggregate:
+            prediction = np.average(
+                members,
+                axis=1,
+                weights=self.weights,
+            )
+        else:
+            prediction = members
+
+        if prediction.shape[1] == 1:
+            return prediction[:, 0]
+
+        return prediction
 

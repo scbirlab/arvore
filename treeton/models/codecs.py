@@ -17,6 +17,7 @@ PACKAGES = {
     "catboost": "catboost",
     "skops": "skops",
     "joblib": "joblib",
+    "ensemble": "treeton",
 }
 
 def _backend_version(codec_name: str) -> str:
@@ -41,14 +42,15 @@ class ModelCodec(Protocol):
     name: str
     filename: str
 
-    def save(self, model: Any, path: Path) -> None: 
+    def save(self, model: Any, path: Path, **kwargs) -> None: 
         ...
 
     def load(
         self, 
         path: Path, 
         *, 
-        trusted: tuple[str, ...] = ()
+        trusted: tuple[str, ...] = (),
+        **kwargs
     ) -> Any: 
         ...
 
@@ -57,7 +59,7 @@ class ModelCodec(Protocol):
 def register_codec(fn: ModelCodec, name: str, ext: str | None = None) -> ModelCodec:
     fn.name = name
     fn.filename = f"model.{ext or name}"
-    CODECS[name] = fn
+    CODECS[name] = fn() if isinstance(fn, type) else fn
     return fn
 
 
@@ -66,13 +68,13 @@ def _class_path(obj):
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
-@register_codec(name="xgboost", ext="ubjson")
+@register_codec(name="xgboost", ext="ubj")
 class XGBoostCodec:
 
-    def save(self, model, path):
+    def save(self, model, path, **kwargs):
         model.save_model(str(path))
 
-    def load(self, path, *, trusted=()):
+    def load(self, path, *, trusted=(), **kwargs):
         from xgboost import XGBRegressor
 
         model = XGBRegressor()
@@ -99,12 +101,12 @@ class LightGBMPredictor:
 @register_codec(name="lightgbm", ext="txt")
 class LightGBMCodec:
 
-    def save(self, model, path):
+    def save(self, model, path, **kwargs):
         # Explicitly preserve the trained ensemble, including
         # its best-iteration prediction behaviour.
         model.booster_.save_model(str(path))
 
-    def load(self, path, *, trusted=()):
+    def load(self, path, *, trusted=(), **kwargs):
         import lightgbm as lgb
 
         booster = lgb.Booster(model_file=str(path))
@@ -114,10 +116,10 @@ class LightGBMCodec:
 @register_codec(name="catboost", ext="cbm")
 class CatBoostCodec:
 
-    def save(self, model, path):
+    def save(self, model, path, **kwargs):
         model.save_model(str(path), format="cbm")
 
-    def load(self, path, *, trusted=()):
+    def load(self, path, *, trusted=(), **kwargs):
         from catboost import CatBoostRegressor
 
         model = CatBoostRegressor()
@@ -128,11 +130,11 @@ class CatBoostCodec:
 @register_codec(name="skops")
 class SkopsCodec:
 
-    def save(self, model, path):
+    def save(self, model, path, **kwargs):
         import skops.io as sio
         sio.dump(model, path)
 
-    def load(self, path, *, trusted=()):
+    def load(self, path, *, trusted=(), **kwargs):
         import skops.io as sio
 
         unknown = sio.get_untrusted_types(file=path)
@@ -152,11 +154,11 @@ class SkopsCodec:
 @register_codec(name="joblib", ext="joblib")
 class JoblibCodec:
 
-    def save(self, model, path):
+    def save(self, model, path, **kwargs):
         import joblib
         joblib.dump(model, path)
 
-    def load(self, path, *, trusted=()):
+    def load(self, path, *, trusted=(), **kwargs):
         import joblib
         return joblib.load(path)
 
@@ -170,9 +172,10 @@ class EnsembleCodec:
         model,
         path: str | os.PathLike, 
         *, 
-        allow_unsafe: bool = False
+        allow_unsafe: bool = False,
+        **kwargs
     ):
-        return model.save(model, path, allow_unsafe=allow_unsafe)
+        return model.save(path, allow_unsafe=allow_unsafe)
 
     def load(
         self,
@@ -192,6 +195,10 @@ class EnsembleCodec:
 def get_model_codec(model, *, allow_unsafe=False):
     """Resolve a codec from the actual fitted estimator type."""
     from sys import modules
+    from .ensemble import Ensemble
+
+    if isinstance(model, Ensemble):
+        return CODECS["ensemble"]
 
     if "xgboost" in modules:
         from xgboost import XGBRegressor
@@ -226,18 +233,17 @@ def save_model(
     path: str | os.PathLike, 
     *,
     skip_save: bool = False,
-    allow_unsafe: bool = False
+    **kwargs
 ):
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
 
     codec = get_model_codec(
-        model, 
-        allow_unsafe=allow_unsafe,
+        model,
     )
     path = path / codec.filename
     if not skip_save:
-        codec.save(model, path)
+        codec.save(model, path,  **kwargs)
 
     return {
         "codec": codec.name,
@@ -254,7 +260,8 @@ def load_model(
     metadata,
     *,
     allow_unsafe: bool = False,
-    trusted_types=()
+    trusted_types=(),
+    **kwargs
 ):
     path = Path(path)
     name = metadata["codec"]
@@ -286,5 +293,7 @@ def load_model(
         raise ValueError("Model checkpoint checksum mismatch")
 
     return codec.load(
-        path, trusted=tuple(trusted_types)
+        path, 
+        trusted=tuple(trusted_types),
+        **kwargs
     )

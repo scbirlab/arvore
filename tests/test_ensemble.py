@@ -31,16 +31,16 @@ def test_repeated_ensemble(regression_data):
     )
     model.fit(X, y)
 
-    members = model.predict(X)
+    members = model.predict(X, disaggregate=True)
 
-    assert members.shape == (80, 3)
+    assert members.shape == (80, 3, 1)
     assert len(model) == 3
     assert [
         m.random_state for m in model.members.values()
     ] == [10, 11, 12]
 
     np.testing.assert_allclose(
-        model.predict(X),
+        model.predict(X)[...,None],
         members.mean(axis=1),
     )
 
@@ -61,10 +61,10 @@ def test_weighted_heterogeneous_ensemble(regression_data):
     )
     model.fit(X, y)
 
-    members = model.predict(X)
+    members = model.predict(X, disaggregate=True)
 
     np.testing.assert_allclose(
-        model.predict(X, aggregate=True),
+        model.predict(X)[...,None],
         np.average(members, axis=1, weights=[3, 1]),
     )
 
@@ -92,8 +92,8 @@ def test_ensemble_codec_roundtrip(tmp_path, regression_data):
     assert list(restored.members) == list(model.members)
 
     np.testing.assert_allclose(
-        model.predict(X, aggregate=True),
-        restored.predict(X, aggregate=True),
+        model.predict(X),
+        restored.predict(X),
     )
 
     # Corruption of an individual member must be detected.
@@ -124,7 +124,7 @@ def test_declarative_ensemble(regression_data):
     model.fit(X, y)
 
     assert len(model) == 3
-    assert model.predict(X, aggregate=True).shape == (80,)
+    assert model.predict(X).shape == (80,)
 
 
 def test_box_checkpoint(tmp_path):
@@ -155,12 +155,12 @@ def test_box_checkpoint(tmp_path):
     box = Box.from_config(config)
     box.fit(data, skip_eval=True)
 
-    before = box.predict(data, aggregate=True)
+    before = box.predict(data)
     path = tmp_path / "box"
     box.save(path)
 
     restored = Box.load(path)
-    after = restored.predict(data, aggregate=True)
+    after = restored.predict(data)
 
     np.testing.assert_allclose(
         before["prediction:y"],
@@ -199,6 +199,6 @@ def test_mixed_backend_codec(tmp_path, regression_data):
     restored = load_model(tmp_path, metadata)
 
     np.testing.assert_allclose(
-        model.predict(X, aggregate=True),
-        restored.predict(X, aggregate=True),
+        model.predict(X),
+        restored.predict(X),
     )

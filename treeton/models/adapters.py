@@ -200,7 +200,7 @@ class CatBoostAdapter(SklearnAdapter):
 
 
 @dataclass
-class EnsembleAdapter:
+class EnsembleAdapter(SklearnAdapter):
     """Delegate fitting and prediction to member adapters."""
 
     def fit(
@@ -224,50 +224,7 @@ class EnsembleAdapter:
                 early_stopping_rounds=early_stopping_rounds,
             )
 
-    def predict_members(self, estimator, X, **kwargs):
-        import numpy as np
-
-        predictions = []
-
-        for name, member in estimator.members.items():
-            adapter = get_adapter(member)
-            prediction = np.asarray(
-                adapter.predict(member, X, **kwargs),
-                dtype=float,
-            )
-
-            if prediction.ndim == 1:
-                prediction = prediction[:, None]
-
-            if prediction.ndim != 2 or prediction.shape[0] != len(X):
-                raise ValueError(
-                    f"Invalid prediction shape for {name!r}: "
-                    f"{prediction.shape}"
-                )
-
-            if predictions and prediction.shape != predictions[0].shape:
-                raise ValueError(
-                    f"Incompatible prediction shape for {name!r}"
-                )
-            predictions.append(prediction)
-        return np.stack(predictions, axis=1)
-
-    def predict(self, estimator, X, *, aggregate: bool = False, **kwargs):
-        import numpy as np
-
-        members = self.predict_members(estimator, X, **kwargs)
-
-        if aggregate:
-            prediction = np.average(
-                members,
-                axis=1,
-                weights=estimator.weights,
-            )
-
-        if prediction.shape[1] == 1:
-            return prediction[:, 0]
-
-        return prediction
+    
 
 
 def get_adapter(estimator: Estimator) -> FitAdapter:
