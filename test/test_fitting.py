@@ -34,7 +34,7 @@ def test_sklearn(data):
         n_estimators=10,
         random_state=42,
     )
-    adapter = get_fit_adapter(model)
+    adapter = get_adapter(model)
 
     assert isinstance(adapter, SklearnAdapter)
 
@@ -59,7 +59,7 @@ def test_xgboost(data):
         n_jobs=1,
         random_state=42,
     )
-    adapter = get_fit_adapter(model)
+    adapter = get_adapter(model)
 
     assert isinstance(adapter, XGBoostAdapter)
 
@@ -85,7 +85,7 @@ def test_lightgbm(data):
         n_jobs=1,
         random_state=42,
     )
-    adapter = get_fit_adapter(model)
+    adapter = get_adapter(model)
 
     assert isinstance(adapter, LightGBMAdapter)
 
@@ -112,7 +112,7 @@ def test_catboost(data):
         thread_count=1,
         random_seed=42,
     )
-    adapter = get_fit_adapter(model)
+    adapter = get_adapter(model)
 
     assert isinstance(adapter, CatBoostAdapter)
 

@@ -68,6 +68,14 @@ class SklearnAdapter:
             )
         estimator.fit(X, y, **_kwargs(fit_kwargs))
 
+    def predict(
+        self,
+        estimator: Estimator, 
+        X: ArrayLike, 
+        **kwargs
+    ):
+        return estimator.predict(X, **kwargs)
+
 
 @dataclass
 class XGBoostAdapter(SklearnAdapter):
@@ -191,29 +199,6 @@ class CatBoostAdapter(SklearnAdapter):
         estimator.fit(X, y, **kw)
 
 
-def get_adapter(estimator: Estimator) -> FitAdapter:
-    """Select a backend using the estimator's type.
-    """
-    from sys import modules
-
-    if "xgboost" in modules:
-        from xgboost import XGBModel
-        if isinstance(estimator, XGBModel):
-            return XGBoostAdapter()
-
-    if "lightgbm" in modules:
-        from lightgbm import LGBMModel
-        if isinstance(estimator, LGBMModel):
-            return LightGBMAdapter()
-
-    if "catboost" in modules:
-        from catboost import CatBoost
-        if isinstance(estimator, CatBoost):
-            return CatBoostAdapter()
-
-    return SklearnAdapter()
-
-
 @dataclass
 class EnsembleAdapter:
     """Delegate fitting and prediction to member adapters."""
@@ -284,3 +269,29 @@ class EnsembleAdapter:
 
         return prediction
 
+
+def get_adapter(estimator: Estimator) -> FitAdapter:
+    """Select a backend using the estimator's type.
+    """
+    from sys import modules
+    from .ensemble import Ensemble
+
+    if isinstance(estimator, Ensemble):
+        return EnsembleAdapter()
+
+    if "xgboost" in modules:
+        from xgboost import XGBModel
+        if isinstance(estimator, XGBModel):
+            return XGBoostAdapter()
+
+    if "lightgbm" in modules:
+        from lightgbm import LGBMModel
+        if isinstance(estimator, LGBMModel):
+            return LightGBMAdapter()
+
+    if "catboost" in modules:
+        from catboost import CatBoost
+        if isinstance(estimator, CatBoost):
+            return CatBoostAdapter()
+
+    return SklearnAdapter()

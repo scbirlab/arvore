@@ -1,8 +1,9 @@
 """Composable regression ensembles."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Iterable
 from math import isfinite
-from numbers import 
+from pathlib import Path
+import os
 
 from ..typing import Estimator
 
@@ -83,11 +84,11 @@ class Ensemble:
         *,
         seed: int | None = DEFAULT_SEED,
         weights=None,
-    ) -> Ensemble:
+    ) -> "Ensemble":
         """Clone an estimator with distinct deterministic seeds."""
         from sklearn.base import clone
 
-        if isinstance(n, int) or n < 1:
+        if not isinstance(n, int) or n < 1:
             raise ValueError(f"n must be a positive integer, but was {n}")
 
         if seed is not None and not isinstance(seed, int):
@@ -131,7 +132,7 @@ class Ensemble:
         config = {
             "kind": "ensemble", 
             "schema_version": self.SCHEMA_VERSION,
-            "weights": list(model.weights),
+            "weights": list(self.model.weights),
             "members": {},
         }
 
@@ -206,12 +207,12 @@ class Ensemble:
         from .codecs import save_model
         path = Path(path)
         manifest = {
-            "schema_version": SCHEMA_VERSION,
-            "weights": list(model.weights),
+            "schema_version": self.SCHEMA_VERSION,
+            "weights": list(self.model.weights),
             "members": [],
         }
 
-        for index, (name, member) in enumerate(model.members.items()):
+        for index, (name, member) in enumerate(self.model.members.items()):
             directory = (
                 path.parent / "members" / f"{name}"
             )
@@ -290,7 +291,7 @@ class Ensemble:
             self, 
             X, 
             y, 
-            fit_kwargs=fit_kwargs,
+            fit_kwargs=kwargs,
         )
         return self
 

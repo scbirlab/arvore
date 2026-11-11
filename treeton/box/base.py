@@ -185,14 +185,16 @@ def _predict_map_batch(
     model,
     column_groups: Iterable[Iterable[str]],
     pipeline: DataPipeline,
-    prediction_column: str = DEFAULT_PREDICTION_COLUMN
+    prediction_column: str = DEFAULT_PREDICTION_COLUMN,
+    kwargs: Mapping | None = None
 ) -> dict[str, ...]:
     import numpy as np
     from ..models.adapters import get_adapter
-    
+
     feature_cols, target_cols = column_groups
+    kwargs = kwargs or {}
     X, *_ = _matrix(batch, pipeline, column_groups=(feature_cols,))
-    y_pred = np.asarray(get_adapter(model).predict(model, X))
+    y_pred = np.asarray(get_adapter(model).predict(model, X, **kwargs))
     if y_pred.ndim == 1:
         y_pred = y_pred[:, None]
 
@@ -292,6 +294,8 @@ class Box:
     ) -> "Box":
         """Construct a Box from JSON-compatible configuration."""
         from aspect.data import DataPipeline
+        from ..models.ensemble import Ensemble
+
         if isinstance(config, (str, Path)):
             if os.path.exists(config):
                 config = load_json(str(config))
@@ -490,7 +494,7 @@ class Box:
         **kwargs
     ):
         """Fit the model using raw training and optional validation and test data."""
-        from ..models import get_fit_adapter
+        from ..models import get_adapter
 
         training_data, pipeline = self.featurize(
             data, 
@@ -530,7 +534,7 @@ class Box:
 
             fit_validation = (X_val, y_val)
 
-        adapter = get_fit_adapter(self.model)
+        adapter = get_adapter(self.model)
         adapter.fit(
             self.model,
             X,
@@ -582,7 +586,8 @@ class Box:
         pipeline: PipelineLike | None = None,
         prediction_column: str = DEFAULT_PREDICTION_COLUMN,
         batch_size: int = DEFAULT_BATCH_SIZE,
-        map_kwargs: Mapping[str, ...] | None = None
+        map_kwargs: Mapping[str, ...] | None = None,
+        **kwargs
     ):
         """Predict over a dataset in bounded-memory batches."""
         map_kwargs = dict(map_kwargs or {})
@@ -601,6 +606,7 @@ class Box:
                 "pipeline": pipeline,
                 "prediction_column": prediction_column,
                 "column_groups": (self.features, self.target),
+                "kwargs": kwargs,
             },
             desc="Predicting",
             **map_kwargs,

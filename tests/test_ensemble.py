@@ -10,7 +10,7 @@ from sklearn.ensemble import (
 
 from treeton import Box, Ensemble
 from treeton.models.codecs import save_model, load_model
-from treeton.models.ensemble import instantiate_model
+from treeton.models.ensemble import Ensemble
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def test_repeated_ensemble(regression_data):
     )
     model.fit(X, y)
 
-    members = model.predict_members(X)
+    members = model.predict(X)
 
     assert members.shape == (80, 3)
     assert len(model) == 3
@@ -61,10 +61,10 @@ def test_weighted_heterogeneous_ensemble(regression_data):
     )
     model.fit(X, y)
 
-    members = model.predict_members(X)
+    members = model.predict(X)
 
     np.testing.assert_allclose(
-        model.predict(X),
+        model.predict(X, aggregate=True),
         np.average(members, axis=1, weights=[3, 1]),
     )
 
@@ -92,8 +92,8 @@ def test_ensemble_codec_roundtrip(tmp_path, regression_data):
     assert list(restored.members) == list(model.members)
 
     np.testing.assert_allclose(
-        model.predict(X),
-        restored.predict(X),
+        model.predict(X, aggregate=True),
+        restored.predict(X, aggregate=True),
     )
 
     # Corruption of an individual member must be detected.
@@ -110,6 +110,7 @@ def test_declarative_ensemble(regression_data):
     X, y = regression_data
 
     config = {
+        "schema_version": 1,
         "kind": "ensemble",
         "base": {
             "class_path": "sklearn.ensemble.RandomForestRegressor",
@@ -119,11 +120,11 @@ def test_declarative_ensemble(regression_data):
         "seed": 42,
     }
 
-    model = instantiate_model(config)
+    model = Ensemble.from_config(config)
     model.fit(X, y)
 
     assert len(model) == 3
-    assert model.predict(X).shape == (80,)
+    assert model.predict(X, aggregate=True).shape == (80,)
 
 
 def test_box_checkpoint(tmp_path):
@@ -138,6 +139,7 @@ def test_box_checkpoint(tmp_path):
     config = {
         "model": {
             "kind": "ensemble",
+            "schema_version": 1,
             "base": {
                 "class_path": "sklearn.ensemble.RandomForestRegressor",
                 "init_args": {"n_estimators": 10},
@@ -153,12 +155,12 @@ def test_box_checkpoint(tmp_path):
     box = Box.from_config(config)
     box.fit(data, skip_eval=True)
 
-    before = box.predict(data)
+    before = box.predict(data, aggregate=True)
     path = tmp_path / "box"
     box.save(path)
 
     restored = Box.load(path)
-    after = restored.predict(data)
+    after = restored.predict(data, aggregate=True)
 
     np.testing.assert_allclose(
         before["prediction:y"],
@@ -191,12 +193,12 @@ def test_mixed_backend_codec(tmp_path, regression_data):
     ] == ["skops", "xgboost"]
 
     assert (
-        tmp_path / "members" / "0001" / "model.ubj"
+        tmp_path / "members" / "xgb" / "model.ubj"
     ).exists()
 
     restored = load_model(tmp_path, metadata)
 
     np.testing.assert_allclose(
-        model.predict(X),
-        restored.predict(X),
+        model.predict(X, aggregate=True),
+        restored.predict(X, aggregate=True),
     )

@@ -1,19 +1,15 @@
 """Model serialization independent of Box and Aspect."""
 
 from typing import Any, Protocol
+from collections.abc import Iterable
 from hashlib import sha256
 from importlib.metadata import version
+import os
 from pathlib import Path
 
 from carabiner.decorators import decorator_with_params
 
-CODECS = {
-    "xgboost": XGBoostCodec(),
-    "lightgbm": LightGBMCodec(),
-    "catboost": CatBoostCodec(),
-    "skops": SkopsCodec(),
-    "joblib": JoblibCodec(),
-}
+CODECS = {}
 
 PACKAGES = {
     "xgboost": "xgboost",
@@ -187,7 +183,6 @@ class EnsembleCodec:
     ):
         from .ensemble import Ensemble
         return Ensemble.load(
-            model, 
             path,
             trusted=trusted,
             allow_unsafe=allow_unsafe,
