@@ -6,5 +6,6 @@ __author__ = "Eachan Johnson"
 __version__ = version(app_name)
 
 from .box import Box
+from .models.ensemble import Ensemble
 
-__all__ = ["Box"]
+__all__ = ["Box", "Ensemble"]

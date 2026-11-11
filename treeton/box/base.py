@@ -188,9 +188,11 @@ def _predict_map_batch(
     prediction_column: str = DEFAULT_PREDICTION_COLUMN
 ) -> dict[str, ...]:
     import numpy as np
+    from ..models.adapters import get_adapter
+    
     feature_cols, target_cols = column_groups
     X, *_ = _matrix(batch, pipeline, column_groups=(feature_cols,))
-    y_pred = np.asarray(model.predict(X))
+    y_pred = np.asarray(get_adapter(model).predict(model, X))
     if y_pred.ndim == 1:
         y_pred = y_pred[:, None]
 
@@ -315,7 +317,7 @@ class Box:
             )
 
         model_config = _json_copy(model_config)
-        model = instantiate_object(model_config)
+        model = Ensemble.from_config(model_config)
 
         pipeline_config = config.get("pipeline", {})
         pipeline = DataPipeline.from_config(

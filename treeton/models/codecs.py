@@ -1,14 +1,27 @@
-
 """Model serialization independent of Box and Aspect."""
 
-from __future__ import annotations
-
+from typing import Any, Protocol
 from hashlib import sha256
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Protocol
 
+from carabiner.decorators import decorator_with_params
 
+CODECS = {
+    "xgboost": XGBoostCodec(),
+    "lightgbm": LightGBMCodec(),
+    "catboost": CatBoostCodec(),
+    "skops": SkopsCodec(),
+    "joblib": JoblibCodec(),
+}
+
+PACKAGES = {
+    "xgboost": "xgboost",
+    "lightgbm": "lightgbm",
+    "catboost": "catboost",
+    "skops": "skops",
+    "joblib": "joblib",
+}
 
 def _backend_version(codec_name: str) -> str:
     """Return the version of the installed codec backend."""
@@ -20,6 +33,7 @@ def _backend_version(codec_name: str) -> str:
         "catboost": "catboost",
         "skops": "skops",
         "joblib": "joblib",
+        "treeton": "treeton",
     }[codec_name]
 
     module = import_module(module_name)
@@ -31,14 +45,24 @@ class ModelCodec(Protocol):
     name: str
     filename: str
 
-    def save(self, model: Any, path: Path) -> None: ...
+    def save(self, model: Any, path: Path) -> None: 
+        ...
 
     def load(
         self, 
         path: Path, 
         *, 
         trusted: tuple[str, ...] = ()
-    ) -> Any: ...
+    ) -> Any: 
+        ...
+
+
+@decorator_with_params
+def register_codec(fn: ModelCodec, name: str, ext: str | None = None) -> ModelCodec:
+    fn.name = name
+    fn.filename = f"model.{ext or name}"
+    CODECS[name] = fn
+    return fn
 
 
 def _class_path(obj):
@@ -46,9 +70,8 @@ def _class_path(obj):
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
+@register_codec(name="xgboost", ext="ubjson")
 class XGBoostCodec:
-    name = "xgboost"
-    filename = "model.ubj"
 
     def save(self, model, path):
         model.save_model(str(path))
@@ -77,9 +100,8 @@ class LightGBMPredictor:
         )
 
 
+@register_codec(name="lightgbm", ext="txt")
 class LightGBMCodec:
-    name = "lightgbm"
-    filename = "model.txt"
 
     def save(self, model, path):
         # Explicitly preserve the trained ensemble, including
@@ -93,9 +115,8 @@ class LightGBMCodec:
         return LightGBMPredictor(booster)
 
 
+@register_codec(name="catboost", ext="cbm")
 class CatBoostCodec:
-    name = "catboost"
-    filename = "model.cbm"
 
     def save(self, model, path):
         model.save_model(str(path), format="cbm")
@@ -108,9 +129,8 @@ class CatBoostCodec:
         return model
 
 
+@register_codec(name="skops")
 class SkopsCodec:
-    name = "skops"
-    filename = "model.skops"
 
     def save(self, model, path):
         import skops.io as sio
@@ -133,9 +153,8 @@ class SkopsCodec:
         )
 
 
+@register_codec(name="joblib", ext="joblib")
 class JoblibCodec:
-    name = "joblib"
-    filename = "model.joblib"
 
     def save(self, model, path):
         import joblib
@@ -146,21 +165,33 @@ class JoblibCodec:
         return joblib.load(path)
 
 
-CODECS = {
-    "xgboost": XGBoostCodec(),
-    "lightgbm": LightGBMCodec(),
-    "catboost": CatBoostCodec(),
-    "skops": SkopsCodec(),
-    "joblib": JoblibCodec(),
-}
+@register_codec(name="ensemble", ext="json")
+class EnsembleCodec:
+    """Composite codec delegating persistence to member codecs."""
 
-PACKAGES = {
-    "xgboost": "xgboost",
-    "lightgbm": "lightgbm",
-    "catboost": "catboost",
-    "skops": "skops",
-    "joblib": "joblib",
-}
+    def save(
+        self, 
+        model,
+        path: str | os.PathLike, 
+        *, 
+        allow_unsafe: bool = False
+    ):
+        return model.save(model, path, allow_unsafe=allow_unsafe)
+
+    def load(
+        self,
+        path: str | os.PathLike,
+        *,
+        trusted: Iterable[str] = (),
+        allow_unsafe: bool = False
+    ):
+        from .ensemble import Ensemble
+        return Ensemble.load(
+            model, 
+            path,
+            trusted=trusted,
+            allow_unsafe=allow_unsafe,
+        )
 
 
 def get_model_codec(model, *, allow_unsafe=False):
@@ -196,35 +227,41 @@ def get_model_codec(model, *, allow_unsafe=False):
 
 
 def save_model(
-    model, directory, *, allow_unsafe=False
+    model, 
+    path: str | os.PathLike, 
+    *,
+    skip_save: bool = False,
+    allow_unsafe: bool = False
 ):
-    directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
 
     codec = get_model_codec(
-        model, allow_unsafe=allow_unsafe
+        model, 
+        allow_unsafe=allow_unsafe,
     )
-    path = directory / codec.filename
-    codec.save(model, path)
+    path = path / codec.filename
+    if not skip_save:
+        codec.save(model, path)
 
     return {
         "codec": codec.name,
-        "filename": codec.filename,
+        "filename": codec.filename if not skip_save else None,
         "class_path": _class_path(model),
         "version": _backend_version(PACKAGES[codec.name]),
-        "sha256": sha256(path.read_bytes()).hexdigest(),
-        "trainable": codec.name != "lightgbm",
+        "sha256": sha256(path.read_bytes()).hexdigest() if not skip_save else None,
+        "trainable": codec.name != "lightgbm" or skip_save,
     }
 
 
 def load_model(
-    directory,
+    path: str | os.PathLike,
     metadata,
     *,
-    allow_unsafe=False,
+    allow_unsafe: bool = False,
     trusted_types=()
 ):
-    directory = Path(directory)
+    path = Path(path)
     name = metadata["codec"]
 
     if name not in CODECS:
@@ -237,13 +274,17 @@ def load_model(
 
     codec = CODECS[name]
     filename = metadata["filename"]
-
+    if filename is None:
+        if metadata["sha256"] is None:
+            raise ValueError(f"Cannot load from checkpoint where mdoel svaing was skipped")
+        else:
+            raise FileNotFoundError(f"Checksum exists but filename is missing")
     if filename != codec.filename:
         raise ValueError(
             f"Unexpected filename for codec {name}: {filename}"
         )
 
-    path = directory / filename
+    path = path / filename
     digest = sha256(path.read_bytes()).hexdigest()
 
     if digest != metadata["sha256"]:

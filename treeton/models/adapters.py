@@ -21,8 +21,16 @@ class FitAdapter(Protocol):
         *,
         validation: Validation | None = None,
         fit_kwargs: Mapping[str, ...] | None = None,
-        early_stopping_rounds: int | None = None,
+        early_stopping_rounds: int | None = None
     ) -> None:
+        ...
+
+    def predict(
+        self, 
+        estimator: Estimator, 
+        X: ArrayLike,
+        **kwargs
+    ) -> ArrayLike:
         ...
 
 
@@ -62,7 +70,7 @@ class SklearnAdapter:
 
 
 @dataclass
-class XGBoostAdapter:
+class XGBoostAdapter(SklearnAdapter):
     def fit(
         self, 
         estimator: Estimator, 
@@ -106,7 +114,7 @@ class XGBoostAdapter:
 
 
 @dataclass
-class LightGBMAdapter:
+class LightGBMAdapter(SklearnAdapter):
     def fit(
         self, 
         estimator: Estimator, 
@@ -146,9 +154,7 @@ class LightGBMAdapter:
             )
 
         if validation is not None:
-            X_val, y_val = validation
-            kw["eval_X"] = X_val
-            kw["eval_y"] = y_val
+            kw["eval_set"] = [validation]
 
         if callbacks:
             kw["callbacks"] = callbacks
@@ -157,7 +163,7 @@ class LightGBMAdapter:
 
 
 @dataclass
-class CatBoostAdapter:
+class CatBoostAdapter(SklearnAdapter):
     def fit(
         self, 
         estimator: Estimator, 
@@ -185,7 +191,7 @@ class CatBoostAdapter:
         estimator.fit(X, y, **kw)
 
 
-def get_fit_adapter(estimator: Estimator) -> FitAdapter:
+def get_adapter(estimator: Estimator) -> FitAdapter:
     """Select a backend using the estimator's type.
     """
     from sys import modules
@@ -206,3 +212,75 @@ def get_fit_adapter(estimator: Estimator) -> FitAdapter:
             return CatBoostAdapter()
 
     return SklearnAdapter()
+
+
+@dataclass
+class EnsembleAdapter:
+    """Delegate fitting and prediction to member adapters."""
+
+    def fit(
+        self,
+        estimator,
+        X,
+        y,
+        *,
+        validation=None,
+        fit_kwargs=None,
+        early_stopping_rounds=None
+    ):
+        for member in estimator.members.values():
+            adapter = get_adapter(member)
+            adapter.fit(
+                member,
+                X,
+                y,
+                validation=validation,
+                fit_kwargs=fit_kwargs,
+                early_stopping_rounds=early_stopping_rounds,
+            )
+
+    def predict_members(self, estimator, X, **kwargs):
+        import numpy as np
+
+        predictions = []
+
+        for name, member in estimator.members.items():
+            adapter = get_adapter(member)
+            prediction = np.asarray(
+                adapter.predict(member, X, **kwargs),
+                dtype=float,
+            )
+
+            if prediction.ndim == 1:
+                prediction = prediction[:, None]
+
+            if prediction.ndim != 2 or prediction.shape[0] != len(X):
+                raise ValueError(
+                    f"Invalid prediction shape for {name!r}: "
+                    f"{prediction.shape}"
+                )
+
+            if predictions and prediction.shape != predictions[0].shape:
+                raise ValueError(
+                    f"Incompatible prediction shape for {name!r}"
+                )
+            predictions.append(prediction)
+        return np.stack(predictions, axis=1)
+
+    def predict(self, estimator, X, *, aggregate: bool = False, **kwargs):
+        import numpy as np
+
+        members = self.predict_members(estimator, X, **kwargs)
+
+        if aggregate:
+            prediction = np.average(
+                members,
+                axis=1,
+                weights=estimator.weights,
+            )
+
+        if prediction.shape[1] == 1:
+            return prediction[:, 0]
+
+        return prediction
+
