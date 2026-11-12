@@ -9,12 +9,12 @@ from pathlib import Path
 from carabiner.decorators import decorator_with_params
 from numpy.typing import ArrayLike
 
+from ..config import ModelArtifact
 from ..typing import Estimator, FitAdapter, Validation
 
 ADAPTERS: dict[str, FitAdapter] = {}
 
-PACKAGES: dict[str, str] = {
-}
+PACKAGES: dict[str, str] = {}
 
 
 def _class_path(obj):
@@ -452,6 +452,8 @@ def save_model(
     skip_save: bool = False,
     **kwargs
 ):
+    from ..config import ModelArtifact
+
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
 
@@ -475,39 +477,39 @@ def save_model(
     else:
         trainable = adapter.restored_trainable
 
-    return {
-        "adapter": adapter.name,
-        "filename": adapter.filename if not skip_save else None,
-        "class_path": _class_path(model),
-        "version": _backend_version(adapter.name),
-        "sha256": sha256(path.read_bytes()).hexdigest() if not skip_save else None,
-        "trainable": trainable,
-    }
+    return ModelArtifact(
+        adapter=adapter.name,
+        filename=adapter.filename if not skip_save else None,
+        class_path=_class_path(model),
+        version=_backend_version(adapter.name),
+        sha256=(
+            sha256(path.read_bytes()).hexdigest()
+            if not skip_save else None
+        ),
+        trainable=trainable,
+    ).to_dict()
 
 
 def load_model(
     path: str | os.PathLike,
-    metadata,
+    artifact: ModelArtifact | Mapping,
     *,
     allow_unsafe: bool = False,
     trusted_types=(),
     **kwargs
 ):
+    from ..config import ModelArtifact
+    if not isinstance(artifact, ModelArtifact):
+        artifact = ModelArtifact.from_dict(artifact)
+
     path = Path(path)
+    adapter = get_adapter_by_name(artifact.adapter)
     name = metadata["adapter"]
-
-    if name not in ADAPTERS:
-        raise ValueError(f"Unknown model adapter: {name}")
-
-    if name == "joblib" and not allow_unsafe:
-        raise ValueError(
-            "Joblib checkpoints require allow_unsafe=True"
-        )
-
+    
     adapter = get_adapter_by_name(name)
-    filename = metadata["filename"]
+    filename = artifact.filename
     if filename is None:
-        if metadata["sha256"] is None:
+        if artifact.sha256 is None:
             raise ValueError(f"Cannot load from checkpoint where mdoel svaing was skipped")
         else:
             raise FileNotFoundError(f"Checksum exists but filename is missing")
@@ -519,7 +521,7 @@ def load_model(
     path = path / filename
     digest = sha256(path.read_bytes()).hexdigest()
 
-    if digest != metadata["sha256"]:
+    if digest != artifact.sha256:
         raise ValueError("Model checkpoint checksum mismatch")
 
     return adapter.load(
