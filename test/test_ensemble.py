@@ -254,3 +254,30 @@ def test_single_estimator_config_roundtrip():
 
     assert len(ensemble) == 1
     assert ensemble.to_config() == config
+
+
+def test_codec_rountrip(tmp_path, regression_data):
+    config = {
+        "kind": "ensemble",
+        "schema_version": 1,
+        "base": {
+            "class_path": "sklearn.ensemble.RandomForestRegressor",
+            "init_args": {"n_estimators": 10},
+        },
+        "n_members": 2,
+        "seed": 42,
+    }
+    X, y = regression_data
+
+    model = Ensemble.from_config(config)
+    model.fit(X, y)
+
+    metadata = save_model(model, tmp_path)
+    restored = load_model(
+        tmp_path,
+        metadata,
+        trusted_types=("sklearn.tree._tree.Tree",),
+    )
+
+    assert restored.to_config() == config
+    np.testing.assert_allclose(model.predict(X), restored.predict(X))

@@ -181,6 +181,7 @@ def test_backend_box_fit(
 
 def test_box_model_config_delegation():
     from sklearn.ensemble import RandomForestRegressor
+    from treeton import Ensemble
 
     config = {
         "kind": "ensemble",

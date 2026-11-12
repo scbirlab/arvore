@@ -178,7 +178,7 @@ class Ensemble:
             ensemble = cls(instantiate_object(config))
 
         elif kind == "ensemble":
-            schema = config.get("schema_version", 1)
+            schema = config.get("schema_version", cls.SCHEMA_VERSION)
 
             if schema != cls.SCHEMA_VERSION:
                 raise ValueError(
@@ -228,13 +228,13 @@ class Ensemble:
         path = Path(path)
         manifest = {
             "schema_version": self.SCHEMA_VERSION,
-            "weights": list(self.weights),
-            "members": [],
             "config": (
                 self.to_config()
                 if self.has_config
                 else None
             ),
+            "weights": list(self.weights),
+            "members": [],
         }
 
         for index, (name, member) in enumerate(self.members.items()):
@@ -303,24 +303,36 @@ class Ensemble:
                 trusted_types=trusted,
             )
 
-        return cls(
+        ensemble = cls(
             members,
             weights=manifest["weights"],
         )
 
-    def fit(self, X, y, validation=None, **kwargs):
-        """Fit through member-specific adapters."""
+        config = manifest.get("config")
+        if config is not None:
+            ensemble._attach_config(config)
+
+        return ensemble
+
+    def fit(
+        self,
+        X,
+        y,
+        *,
+        validation=None,
+        early_stopping_rounds=None,
+        **fit_kwargs,
+    ):
         from .adapters import get_adapter
 
-        for member in self.members.values():
-            adapter = get_adapter(member)
-            adapter.fit(
-                member,
-                X,
-                y,
-                validation=validation,
-                **kwargs,
-            )
+        get_adapter(self).fit(
+            self,
+            X,
+            y,
+            validation=validation,
+            fit_kwargs=fit_kwargs,
+            early_stopping_rounds=early_stopping_rounds,
+        )
         return self
 
     def predict_members(

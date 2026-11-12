@@ -245,6 +245,16 @@ def save_model(
     path = path / codec.filename
     if not skip_save:
         codec.save(model, path,  **kwargs)
+    if codec.name == "ensemble":
+        from providence.io import load_json
+
+        manifest = load_json(path)
+        trainable = all(
+            entry["metadata"]["trainable"]
+            for entry in manifest["members"]
+        )
+    else:
+        trainable = codec.name != "lightgbm"
 
     return {
         "codec": codec.name,
@@ -252,7 +262,7 @@ def save_model(
         "class_path": _class_path(model),
         "version": _backend_version(PACKAGES[codec.name]),
         "sha256": sha256(path.read_bytes()).hexdigest() if not skip_save else None,
-        "trainable": codec.name != "lightgbm" or skip_save,
+        "trainable": trainable or skip_save,
     }
 
 
