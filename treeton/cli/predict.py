@@ -6,7 +6,7 @@ from carabiner.cliutils import clicommand
 
 from ..box import Box
 from ..box.base import DEFAULT_BATCH_SIZE
-from ..config import apply_overrides
+from ..config.instantiate import apply_overrides
 
 
 @clicommand(message="Predicting")

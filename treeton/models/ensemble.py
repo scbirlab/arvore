@@ -130,17 +130,19 @@ class Ensemble:
 
     def _attach_config(self, config):
         """Attach a declarative specification without replacing an existing one."""
-        from copy import deepcopy
+        from ..config import parse_model_config
 
-        config = deepcopy(dict(config))
+        parsed = parse_model_config(config)
 
-        if self._config is not None and self._config != config:
+        if self._config is not None and self._config != parsed:
             raise ValueError(
                 "Model configuration conflicts with the "
-                "ensemble's existing specification"
+                "ensemble's existing specification:\n"
+                f"Incumbent: {self._config}\n"
+                f"Parsed: {parsed}\n"
             )
 
-        self._config = config
+        self._config = parsed
 
     def to_config(self, path=None):
         """Return the original declarative model specification."""
@@ -150,7 +152,7 @@ class Ensemble:
                 "and has no declarative configuration."
             )
 
-        config = deepcopy(self._config)
+        config = self._config.to_dict()
 
         if path is not None:
             from providence.io import save_json
@@ -161,61 +163,43 @@ class Ensemble:
     @classmethod
     def from_config(cls, config):
         """Construct an ensemble, retaining its model specification."""
-        from ..config import instantiate_object
+        from ..config import (
+            EstimatorConfig,
+            parse_model_config,
+            instantiate_object,
+        )
         from providence.io import load_json
 
         if isinstance(config, (str, os.PathLike)):
             config = load_json(str(config))
 
-        if not isinstance(config, Mapping):
-            raise TypeError("Config must be a mapping or filename")
+        parsed = parse_model_config(config)
 
-        config = deepcopy(dict(config))
-        kind = config.get("kind")
+        if isinstance(parsed, EstimatorConfig):
+            ensemble = cls(
+                instantiate_object(parsed.to_dict())
+            )
 
-        if kind is None:
-            # Backward compatibility: ordinary estimator configs.
-            ensemble = cls(instantiate_object(config))
+        elif parsed.members is not None:
+            ensemble = cls(
+                {
+                    name: instantiate_object(spec.to_dict())
+                    for name, spec in parsed.members.items()
+                },
+                weights=parsed.weights,
+            )
 
-        elif kind == "ensemble":
-            schema = config.get("schema_version", cls.SCHEMA_VERSION)
-
-            if schema != cls.SCHEMA_VERSION:
-                raise ValueError(
-                    f"Unsupported ensemble schema: {schema}"
-                )
-
-            if "members" in config:
-                if "base" in config or "n_members" in config:
-                    raise ValueError(
-                        "Use either members or base/n_members"
-                    )
-
-                ensemble = cls(
-                    {
-                        name: instantiate_object(spec)
-                        for name, spec in config["members"].items()
-                    },
-                    weights=config.get("weights"),
-                )
-
-            elif "base" in config:
-                ensemble = cls.repeat(
-                    instantiate_object(config["base"]),
-                    n=config.get("n_members", 1),
-                    seed=config.get("seed", DEFAULT_SEED),
-                    weights=config.get("weights"),
-                )
-
-            else:
-                raise ValueError(
-                    "Ensemble requires base or members"
-                )
         else:
-            raise ValueError(f"Unknown model kind: {kind}")
+            ensemble = cls.repeat(
+                instantiate_object(parsed.base.to_dict()),
+                n=parsed.n_members,
+                seed=parsed.seed,
+                weights=parsed.weights,
+            )
 
-        ensemble._config = deepcopy(config)
+        ensemble._config = parsed
         return ensemble
+
 
     def save(
         self, 
@@ -224,36 +208,35 @@ class Ensemble:
         allow_unsafe: bool = False
     ):
         from providence.io import save_json
-        from .codecs import save_model
+        from ..config import EnsembleManifest
+        from .adapters import save_model
         path = Path(path)
-        manifest = {
-            "schema_version": self.SCHEMA_VERSION,
-            "config": (
-                self.to_config()
-                if self.has_config
-                else None
-            ),
-            "weights": list(self.weights),
-            "members": [],
-        }
+        entries = []
 
         for index, (name, member) in enumerate(self.members.items()):
-            directory = (
-                path.parent / "members" / f"{index:04d}"
-            )
-            # Use the existing codec dispatcher, including
-            # backend-native formats and safety controls.
-            metadata = save_model(
+            directory = path.parent / "members" / f"{index:04d}"
+
+            artifact = save_model(
                 member,
                 directory,
                 allow_unsafe=allow_unsafe,
             )
-            manifest["members"].append({
+
+            entries.append({
                 "name": name,
-                "metadata": metadata,
+                "metadata": artifact,
             })
-        save_json(manifest, path)
+
+        manifest = EnsembleManifest.from_dict({
+            "schema_version": EnsembleManifest._version,
+            "config": self.to_config() if self.has_config else None,
+            "weights": list(self.weights),
+            "members": entries,
+        })
+
+        save_json(manifest.to_dict(), path)
         return None
+
 
     @classmethod
     def load(
@@ -264,53 +247,28 @@ class Ensemble:
         allow_unsafe: bool = False,
     ):
         from providence.io import load_json
-        from .codecs import load_model
+        from ..config import EnsembleManifest
+        from .adapters import load_model
 
         path = Path(path)
-        manifest = load_json(path)
-
-        schema = manifest.get("schema_version")
-        if schema != cls.SCHEMA_VERSION:
-            raise ValueError(
-                "Unsupported ensemble checkpoint schema: "
-                f"version is {schema} but package is {cls.SCHEMA_VERSION}"
-            )
-
-        entries = manifest.get("members")
-        if not isinstance(entries, (list, tuple)) or not entries:
-            raise ValueError("Invalid ensemble member manifest")
+        manifest = EnsembleManifest.from_dict(load_json(path))
 
         members = {}
 
-        for index, entry in enumerate(entries):
-            name = entry["name"]
-            metadata = entry["metadata"]
+        for index, (name, artifact) in enumerate(manifest.members):
+            directory = path.parent / "members" / f"{index:04d}"
 
-            if not isinstance(name, str) or not name or name in members:
-                raise ValueError("Invalid or duplicate member name")
-
-            if metadata["codec"] == "ensemble":
-                raise ValueError(
-                    "Nested ensemble checkpoints are unsupported"
-                )
-            directory = (
-                path.parent / "members" / f"{index:04d}"
-            )
             members[name] = load_model(
                 directory,
-                metadata,
+                artifact.to_dict(),
                 allow_unsafe=allow_unsafe,
                 trusted_types=trusted,
             )
 
-        ensemble = cls(
-            members,
-            weights=manifest["weights"],
-        )
+        ensemble = cls(members, weights=manifest.weights)
 
-        config = manifest.get("config")
-        if config is not None:
-            ensemble._attach_config(config)
+        if manifest.config is not None:
+            ensemble._config = manifest.config
 
         return ensemble
 

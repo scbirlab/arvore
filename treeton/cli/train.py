@@ -5,7 +5,7 @@ from argparse import Namespace
 from carabiner.cliutils import clicommand
 
 from ..box import Box
-from ..config import resolve_experiment_config
+from ..config.instantiate import resolve_experiment_config
 
 
 @clicommand(message="Training model")

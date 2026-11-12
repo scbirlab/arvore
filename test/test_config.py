@@ -5,7 +5,7 @@ from copy import deepcopy
 import pytest
 from sklearn.ensemble import RandomForestRegressor
 
-from treeton.config import (
+from treeton.config.instantiate import (
     apply_overrides,
     instantiate_object,
     resolve_experiment_config,
