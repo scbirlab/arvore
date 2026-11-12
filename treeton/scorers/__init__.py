@@ -7,7 +7,7 @@ from .registry import (
     resolve_scorers,
     scorer_name,
 )
-from .ensemble import EnsembleSD
+from .ensemble import EnsembleSD, TreeSD
 
 __all__ = [
     "Requirements",
@@ -18,4 +18,5 @@ __all__ = [
     "resolve_scorers",
     "scorer_name",
     "EnsembleSD",
+    "TreeSD",
 ]

@@ -94,3 +94,80 @@ class EnsembleSD:
             weights=weights,
         )
         return np.sqrt(variance)
+
+
+@register_scorer
+@dataclass(frozen=True)
+class TreeSD:
+    """Root mean within-forest variance across ensemble members."""
+
+    name: ClassVar[str] = "tree_sd"
+
+    @property
+    def requirements(self) -> Requirements:
+        return Requirements(
+            outputs=("tree_predictions",),
+            capabilities=("tree_predictions",),
+        )
+
+    def __call__(self, context: ScoreContext) -> NDArray:
+        import numpy as np
+
+        forests = context.tree_predictions
+
+        if not forests:
+            raise ValueError(
+                "tree_sd requires individual tree predictions"
+            )
+
+        variances = []
+
+        for predictions in forests:
+            predictions = np.asarray(predictions, dtype=float)
+
+            if predictions.ndim != 3:
+                raise ValueError(
+                    "Expected tree predictions with shape "
+                    "(samples, trees, targets)"
+                )
+
+            n_samples, n_trees, n_targets = predictions.shape
+
+            if n_trees < 2:
+                raise ValueError(
+                    "tree_sd requires at least two trees per forest"
+                )
+
+            if (
+                n_samples != len(context.X)
+                or n_targets != len(context.targets)
+            ):
+                raise ValueError(
+                    "Tree prediction dimensions do not match context"
+                )
+
+            variances.append(
+                np.var(predictions, axis=1, ddof=0)
+            )
+
+        weights = context.member_weights
+
+        if weights is None:
+            weights = np.ones(len(forests))
+
+        weights = np.asarray(weights, dtype=float)
+
+        if (
+            weights.shape != (len(forests),)
+            or not np.all(np.isfinite(weights))
+            or np.any(weights <= 0)
+        ):
+            raise ValueError("Invalid forest weights")
+
+        variance = np.average(
+            np.stack(variances, axis=1),
+            axis=1,
+            weights=weights,
+        )
+
+        return np.sqrt(variance)

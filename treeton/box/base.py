@@ -203,8 +203,8 @@ def _validate_score_requirements(
                 f"Scorer {name!r} must expose Requirements"
             )
 
-        unsupported_outputs = set(requirements.outputs) - {"prediction", "member_predictions"}
-        unsupported_capabilities = set(requirements.capabilities) - {"ensemble_members"}
+        unsupported_outputs = set(requirements.outputs) - {"prediction", "member_predictions", "tree_predictions"}
+        unsupported_capabilities = set(requirements.capabilities) - {"ensemble_members", "tree_predictions"}
 
         if unsupported_outputs or unsupported_capabilities:
             raise NotImplementedError(
@@ -240,6 +240,34 @@ def _validate_score_requirements(
                     f"Scorer {name!r} requires an ensemble "
                     "with at least two members"
                 )
+
+        needs_trees = (
+            "tree_predictions" in requirements.outputs
+            or "tree_predictions" in requirements.capabilities
+        )
+
+        if needs_trees:
+            from ..models.adapters import get_adapter
+
+            members = (
+                model.members
+                if isinstance(model, Ensemble)
+                else {"model": model}
+            )
+
+            unsupported = [
+                member_name
+                for member_name, member in members.items()
+                if "tree_predictions"
+                not in get_adapter(member).capabilities(member)
+            ]
+
+            if unsupported:
+                raise ValueError(
+                    f"Scorer {name!r} requires tree_predictions; "
+                    f"unsupported members: {unsupported}"
+                )
+
     return None
 
 
@@ -251,7 +279,7 @@ def _predict_map_batch(
     pipeline: DataPipeline,
     prediction_column: str = DEFAULT_PREDICTION_COLUMN,
     kwargs: Mapping | None = None,
-    scorers: tuple = (),
+    scorers: tuple = ()
 ) -> dict[str, ...]:
     import numpy as np
 
@@ -272,27 +300,44 @@ def _predict_map_batch(
     member_weights = None
 
     if scorers and isinstance(model, Ensemble):
-        if kwargs.pop("disaggregate", False):
-            raise ValueError(
-                "Scored predictions cannot use disaggregate=True"
+        disaggregate = kwargs.pop("disaggregate", False)
+        member_predictions = np.asarray(
+            get_adapter(model).predict(
+                model, 
+                X,
+                disaggregate=True,
+                **kwargs,
             )
-
-        member_predictions = model.predict_members(
-            X, **kwargs
         )
         member_weights = np.asarray(
-            model.weights, dtype=float
+            model.weights, 
+            dtype=float,
         )
-
         y_pred = np.average(
             member_predictions,
             axis=1,
             weights=member_weights,
         )
+        if disaggregate:
+            y_pred0 = member_predictions
+            expected_shape_disagg = (len(X), len(model.weights), len(target_cols))
+            if y_pred0.shape != expected_shape_disagg:
+                raise ValueError(
+                    f"Expected disaggregated predictions with shape {expected_shape_disagg}, "
+                    f"received {y_pred0.shape}"
+                )
+        else:
+            y_pred0 = y_pred
     else:
         y_pred = np.asarray(
-            get_adapter(model).predict(model, X, **kwargs)
+            get_adapter(model).predict(
+                model, 
+                X, 
+                **kwargs,
+            )
         )
+        y_pred0 = y_pred
+        disaggregate = kwargs.get("disaggregate", isinstance(model, Ensemble))
 
     if y_pred.ndim == 1:
         y_pred = y_pred[:, None]
@@ -305,13 +350,23 @@ def _predict_map_batch(
             f"received {y_pred.shape}"
         )
 
-    predicted = {
-        f"{prediction_column}:{target}": values
-        for target, values in zip(target_cols, y_pred.T)
-    }
+    if disaggregate:
+        predicted = {
+            f"{prediction_column}:{target}:{i}": values
+            for (target, i), values in enumerate(zip(
+                product(target_cols, members.names), 
+                y_pred0.T,
+            ))
+        }
+    else:
+        predicted = {
+            f"{prediction_column}:{target}": values
+            for (target, values) in zip(target_cols, y_pred.T)
+        }
 
-    if not scorers:
-        return batch | predicted
+    output = batch | predicted
+    if scorers is None:
+        return output
 
     context = ScoreContext(
         X=X,
@@ -322,26 +377,29 @@ def _predict_map_batch(
         member_predictions=member_predictions,
         member_weights=member_weights,
     )
-
-    output = batch | predicted
-
     for scorer in scorers:
         name = scorer_name(scorer)
 
         try:
-            values = np.asarray(
-                scorer(context), dtype=float
-            )
+            values = scorer(context)
         except (TypeError, ValueError) as error:
-            raise ValueError(
-                f"Scorer {name!r} must return numeric values"
-            ) from error
+            raise error
+            # raise ValueError(
+            #     f"Scorer {name!r} must return numeric values"
+            # ) from error
+        else:
+            values = np.asarray(
+                values, 
+                dtype=float,
+            )
 
         if values.shape == (len(X),):
+            # scalar
             columns = {
                 f"score:{name}": values,
             }
         elif values.shape == expected_shape:
+            # per target
             columns = {
                 f"score:{name}:{target}": column
                 for target, column in zip(
@@ -365,6 +423,7 @@ def _predict_map_batch(
         output.update(columns)
 
     return output
+
 
 class Box:
     """Data processing, and model training.

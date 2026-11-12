@@ -30,6 +30,7 @@ class ScoreContext:
 
     member_predictions: NDArray | None = None
     member_weights: NDArray | None = None
+    tree_predictions: tuple[NDArray, ...] | None = None
 
 
 class Scorer(Protocol):
