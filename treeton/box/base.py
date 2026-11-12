@@ -19,7 +19,9 @@ else:
 
 from ..config.instantiate import instantiate_object
 from ..metrics import DEFAULT_METRICS, METRICS_REGISTRY
+from ..models.ensemble import Ensemble
 from ..typing import Estimator, DataLike, PipelineLike
+from ..scorers import Requirements, Scorer, scorer_name
 
 CONFIG_FILENAME = "config.json"
 DEFAULT_BATCH_SIZE: int = 1024
@@ -179,6 +181,68 @@ def _matrix(
     return blocks
     
 
+def _validate_score_requirements(
+    scorers: Iterable[str | Scorer | Callable] | str | Scorer | Callable,
+    model: Callable,
+    prepared: Dataset | IterableDataset | Mapping
+):
+    """Check scorer compatibility before batch prediction."""
+   
+    available_columns = set(_col_names(prepared))
+
+    for scorer in scorers:
+        name = scorer_name(scorer)
+        requirements = getattr(
+            scorer,
+            "requirements",
+            Requirements(),
+        )
+
+        if not isinstance(requirements, Requirements):
+            raise TypeError(
+                f"Scorer {name!r} must expose Requirements"
+            )
+
+        unsupported_outputs = set(requirements.outputs) - {"prediction", "member_predictions"}
+        unsupported_capabilities = set(requirements.capabilities) - {"ensemble_members"}
+
+        if unsupported_outputs or unsupported_capabilities:
+            raise NotImplementedError(
+                f"Scorer {name!r} requests unsupported "
+                f"resources: outputs={unsupported_outputs}, "
+                f"capabilities={unsupported_capabilities}"
+            )
+
+        if (
+            requirements.reference_features
+            or requirements.reference_columns
+        ):
+            raise NotImplementedError(
+                f"Scorer {name!r} requires training references; "
+                "reference preparation is not implemented yet"
+            )
+
+        missing = set(requirements.columns) - available_columns
+        if missing:
+            raise ValueError(
+                f"Scorer {name!r} requires missing columns: "
+                f"{sorted(missing)}"
+            )
+
+        needs_members = (
+            "member_predictions" in requirements.outputs
+            or "ensemble_members" in requirements.capabilities
+        )
+
+        if needs_members:
+            if not isinstance(model, Ensemble) or len(model) < 2:
+                raise ValueError(
+                    f"Scorer {name!r} requires an ensemble "
+                    "with at least two members"
+                )
+    return None
+
+
 def _predict_map_batch(
     batch: Mapping[str, ...],
     *,
@@ -186,19 +250,55 @@ def _predict_map_batch(
     column_groups: Iterable[Iterable[str]],
     pipeline: DataPipeline,
     prediction_column: str = DEFAULT_PREDICTION_COLUMN,
-    kwargs: Mapping | None = None
+    kwargs: Mapping | None = None,
+    scorers: tuple = (),
 ) -> dict[str, ...]:
     import numpy as np
+
     from ..models.adapters import get_adapter
+    from ..models.ensemble import Ensemble
+    from ..scorers import ScoreContext, scorer_name
 
     feature_cols, target_cols = column_groups
-    kwargs = kwargs or {}
-    X, *_ = _matrix(batch, pipeline, column_groups=(feature_cols,))
-    y_pred = np.asarray(get_adapter(model).predict(model, X, **kwargs))
+    kwargs = dict(kwargs or {})
+
+    X, *_ = _matrix(
+        batch,
+        pipeline,
+        column_groups=(feature_cols,),
+    )
+
+    member_predictions = None
+    member_weights = None
+
+    if scorers and isinstance(model, Ensemble):
+        if kwargs.pop("disaggregate", False):
+            raise ValueError(
+                "Scored predictions cannot use disaggregate=True"
+            )
+
+        member_predictions = model.predict_members(
+            X, **kwargs
+        )
+        member_weights = np.asarray(
+            model.weights, dtype=float
+        )
+
+        y_pred = np.average(
+            member_predictions,
+            axis=1,
+            weights=member_weights,
+        )
+    else:
+        y_pred = np.asarray(
+            get_adapter(model).predict(model, X, **kwargs)
+        )
+
     if y_pred.ndim == 1:
         y_pred = y_pred[:, None]
 
     expected_shape = (len(X), len(target_cols))
+
     if y_pred.shape != expected_shape:
         raise ValueError(
             f"Expected predictions with shape {expected_shape}, "
@@ -206,11 +306,65 @@ def _predict_map_batch(
         )
 
     predicted = {
-        f"{prediction_column}:{target}": p
-        for target, p in zip(target_cols, y_pred.T)
+        f"{prediction_column}:{target}": values
+        for target, values in zip(target_cols, y_pred.T)
     }
-    return batch | predicted
 
+    if not scorers:
+        return batch | predicted
+
+    context = ScoreContext(
+        X=X,
+        predictions=y_pred,
+        model=model,
+        batch=batch,
+        targets=tuple(target_cols),
+        member_predictions=member_predictions,
+        member_weights=member_weights,
+    )
+
+    output = batch | predicted
+
+    for scorer in scorers:
+        name = scorer_name(scorer)
+
+        try:
+            values = np.asarray(
+                scorer(context), dtype=float
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Scorer {name!r} must return numeric values"
+            ) from error
+
+        if values.shape == (len(X),):
+            columns = {
+                f"score:{name}": values,
+            }
+        elif values.shape == expected_shape:
+            columns = {
+                f"score:{name}:{target}": column
+                for target, column in zip(
+                    target_cols, values.T
+                )
+            }
+        else:
+            raise ValueError(
+                f"Scorer {name!r} returned shape "
+                f"{values.shape}; expected ({len(X)},) "
+                f"or {expected_shape}"
+            )
+
+        collisions = set(columns) & set(output)
+        if collisions:
+            raise ValueError(
+                f"Score output columns already exist: "
+                f"{sorted(collisions)}"
+            )
+
+        output.update(columns)
+
+    return output
 
 class Box:
     """Data processing, and model training.
@@ -609,16 +763,42 @@ class Box:
         prediction_column: str = DEFAULT_PREDICTION_COLUMN,
         batch_size: int = DEFAULT_BATCH_SIZE,
         map_kwargs: Mapping[str, ...] | None = None,
+        *,
+        score=None,
         **kwargs
     ):
-        """Predict over a dataset in bounded-memory batches."""
+        """Predict in batches, optionally computing diagnostics."""
+        from ..scorers import resolve_scorers
+
         map_kwargs = dict(map_kwargs or {})
+
         if batch_size < 1:
-            raise ValueError(f"batch_size must be positive ({batch_size})")
+            raise ValueError(
+                f"batch_size must be positive ({batch_size})"
+            )
+
+        scorers = resolve_scorers(score)
+
+        if (
+            scorers
+            and map_kwargs.get("num_proc", 1) not in (None, 1)
+        ):
+            raise ValueError(
+                "Multiprocess scoring is not supported yet"
+            )
+
         prepared, pipeline = self._pre_predict(
             data=data,
-            pipeline=pipeline
+            pipeline=pipeline,
         )
+
+        if scorers:
+            _validate_score_requirements(
+                scorers,
+                self.model,
+                prepared,
+            )
+
         return prepared.map(
             _predict_map_batch,
             batched=True,
@@ -629,6 +809,7 @@ class Box:
                 "prediction_column": prediction_column,
                 "column_groups": (self.features, self.target),
                 "kwargs": kwargs,
+                "scorers": scorers,
             },
             desc="Predicting",
             **map_kwargs,

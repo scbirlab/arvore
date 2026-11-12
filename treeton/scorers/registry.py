@@ -36,7 +36,7 @@ def scorer_name(scorer) -> str:
         )
 
     if not isinstance(name, str) or not name:
-        raise ValueError("Scorer must have a nonempty name")
+        raise ValueError(f"Scorer must have a nonempty name, but scorer was {scorer}")
 
     return name
 
