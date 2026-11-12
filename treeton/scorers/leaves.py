@@ -1,6 +1,6 @@
 """Reference-based tree leaf occupancy diagnostics."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar
 
 import numpy as np
@@ -17,6 +17,7 @@ class LeafReference:
     ids: tuple[NDArray, ...]
     counts: tuple[NDArray, ...]
     n_reference: int
+    calibration_scores: NDArray | None = None
 
     def inverse_score(self, leaves: NDArray) -> NDArray:
         """Mean inverse occupancy across trees."""
@@ -56,6 +57,45 @@ class LeafReference:
             scores += 1. / (occupancy + 1.)
 
         return scores / n_trees
+
+
+    def with_calibration(self, scores) -> "LeafReference":
+        """Attach sorted raw reference scores."""
+        scores = np.asarray(scores, dtype=float)
+
+        if scores.shape != (self.n_reference,):
+            raise ValueError(
+                f"Expected {self.n_reference} calibration scores, "
+                f"received {scores.shape}"
+            )
+
+        if not np.all(np.isfinite(scores)):
+            raise ValueError("Calibration scores must be finite")
+
+        return replace(
+            self,
+            calibration_scores=np.sort(scores),
+        )
+
+    def percentile_score(self, leaves: NDArray) -> NDArray:
+        """Empirical midrank percentile of inverse occupancy."""
+        reference = self.calibration_scores
+
+        if reference is None:
+            raise ValueError(
+                "Reference percentile calibration is unavailable"
+            )
+
+        scores = self.inverse_score(leaves)
+
+        left = np.searchsorted(
+            reference, scores, side="left"
+        )
+        right = np.searchsorted(
+            reference, scores, side="right"
+        )
+
+        return (left + right) / (2.0 * len(reference))
 
 
 class LeafReferenceBuilder:
@@ -131,6 +171,16 @@ class InverseLeafOccupancy:
     """Mean inverse reference leaf occupancy."""
 
     name: ClassVar[str] = "inverse_leaf_occupancy"
+    normalization: str = "raw"
+
+    def __post_init__(self):
+        if self.normalization not in (
+            "raw",
+            "reference_percentile",
+        ):
+            raise ValueError(
+                f"Unknown normalization: {self.normalization!r}"
+            )
 
     @property
     def requirements(self) -> Requirements:
@@ -138,6 +188,9 @@ class InverseLeafOccupancy:
             outputs=("leaf_indices",),
             capabilities=("leaf_indices",),
             reference_features=True,
+            reference_score_distribution=(
+                self.normalization == "reference_percentile"
+            ),
         )
 
     def __call__(self, context: ScoreContext) -> NDArray:
@@ -157,7 +210,11 @@ class InverseLeafOccupancy:
 
         member_scores = np.stack(
             [
-                reference.inverse_score(query)
+                (
+                    reference.percentile_score(query)
+                    if self.normalization == "reference_percentile"
+                    else reference.inverse_score(query)
+                )
                 for reference, query in zip(
                     references, leaves
                 )

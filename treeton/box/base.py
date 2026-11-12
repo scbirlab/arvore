@@ -923,16 +923,19 @@ class Box:
         return prepared.with_format(None), working_pipeline
 
 
+
     def _prepare_leaf_reference(
         self,
         *,
         batch_size: int = DEFAULT_BATCH_SIZE,
+        calibrate: bool = False,
     ):
-        """Build sparse leaf counts from fitted training data."""
+        """Prepare reference leaf counts and optional percentiles."""
+        import numpy as np
+
         from ..models.adapters import get_adapter
         from ..scorers.leaves import LeafReferenceBuilder
 
-        # Prefer fitted outputs: transformations have already run.
         data_out = getattr(self.pipeline, "data_out", None)
 
         if data_out is not None:
@@ -940,8 +943,6 @@ class Box:
             reference_pipeline = self.pipeline
 
         elif getattr(self.pipeline, "data_in", None) is not None:
-            # Regenerate from the recorded source using a
-            # clone of the fitted pipeline.
             reference, reference_pipeline = self._pre_predict(
                 data=None,
             )
@@ -961,30 +962,31 @@ class Box:
             else (self.model,)
         )
 
+        def iter_batches():
+            if hasattr(reference, "iter"):
+                yield from reference.iter(batch_size=batch_size)
+
+            elif isinstance(reference, Mapping):
+                n_rows = _data_len(reference)
+
+                for start in range(0, n_rows, batch_size):
+                    yield {
+                        name: values[start:start + batch_size]
+                        for name, values in reference.items()
+                    }
+
+            else:
+                raise TypeError(
+                    "Training reference must be a Dataset "
+                    "or mapping of columns"
+                )
+
         builders = [
             LeafReferenceBuilder() for _ in models
         ]
 
-        if hasattr(reference, "iter"):
-            batches = reference.iter(batch_size=batch_size)
-
-        elif isinstance(reference, Mapping):
-            n_rows = _data_len(reference)
-            batches = (
-                {
-                    name: values[start:start + batch_size]
-                    for name, values in reference.items()
-                }
-                for start in range(0, n_rows, batch_size)
-            )
-
-        else:
-            raise TypeError(
-                "Training reference must be a Dataset "
-                "or mapping of columns"
-            )
-
-        for batch in batches:
+        # First pass: build leaf occupancy counts.
+        for batch in iter_batches():
             if not batch:
                 continue
 
@@ -995,12 +997,48 @@ class Box:
             )
 
             for model, builder in zip(models, builders):
-                adapter = get_adapter(model)
-                leaves = adapter.leaf_indices(model, X)
+                leaves = get_adapter(model).leaf_indices(model, X)
                 builder.update(leaves)
 
-        return tuple(
+        references = tuple(
             builder.finish() for builder in builders
+        )
+
+        if not calibrate:
+            return references
+
+        # Second pass: obtain the reference score distribution
+        # for each model independently.
+        scores = [[] for _ in models]
+
+        for batch in iter_batches():
+            if not batch:
+                continue
+
+            (X,) = _matrix(
+                batch,
+                reference_pipeline,
+                (self.features,),
+            )
+
+            for i, (model, reference_index) in enumerate(
+                zip(models, references)
+            ):
+                leaves = get_adapter(model).leaf_indices(
+                    model, X
+                )
+
+                scores[i].append(
+                    reference_index.inverse_score(leaves)
+                )
+
+        return tuple(
+            reference_index.with_calibration(
+                np.concatenate(parts)
+            )
+            for reference_index, parts in zip(
+                references, scores
+            )
         )
 
     def predict(
@@ -1059,6 +1097,14 @@ class Box:
             resources = {
                 "leaf_reference": self._prepare_leaf_reference(
                     batch_size=batch_size,
+                    calibrate=any(
+                        getattr(
+                            scorer,
+                            "requirements",
+                            Requirements(),
+                        ).reference_score_distribution
+                        for scorer in scorers
+                    ),
                 )
             }
 
