@@ -8,6 +8,7 @@ from .registry import (
     scorer_name,
 )
 from .ensemble import EnsembleSD, TreeSD
+from .leaves import InverseLeafOccupancy
 
 __all__ = [
     "Requirements",
@@ -19,4 +20,5 @@ __all__ = [
     "scorer_name",
     "EnsembleSD",
     "TreeSD",
+    "InverseLeafOccupancy",
 ]

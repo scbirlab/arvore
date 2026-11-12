@@ -204,8 +204,8 @@ def _validate_score_requirements(
                 f"Scorer {name!r} must expose Requirements"
             )
 
-        unsupported_outputs = set(requirements.outputs) - {"prediction", "member_predictions", "tree_predictions"}
-        unsupported_capabilities = set(requirements.capabilities) - {"ensemble_members", "tree_predictions"}
+        unsupported_outputs = set(requirements.outputs) - {"prediction", "member_predictions", "tree_predictions", "leaf_indices"}
+        unsupported_capabilities = set(requirements.capabilities) - {"ensemble_members", "tree_predictions", "leaf_indices"}
 
         if unsupported_outputs or unsupported_capabilities:
             raise NotImplementedError(
@@ -214,13 +214,19 @@ def _validate_score_requirements(
                 f"capabilities={unsupported_capabilities}"
             )
 
+        if requirements.reference_columns:
+            raise NotImplementedError(
+                f"Scorer {name!r} requires reference columns; "
+                "column preparation is not implemented yet"
+            )
+
         if (
             requirements.reference_features
-            or requirements.reference_columns
+            and "leaf_indices" not in requirements.outputs
         ):
             raise NotImplementedError(
-                f"Scorer {name!r} requires training references; "
-                "reference preparation is not implemented yet"
+                f"Scorer {name!r} requests unsupported "
+                "reference preparation"
             )
 
         missing = set(requirements.columns) - available_columns
@@ -269,6 +275,33 @@ def _validate_score_requirements(
                     f"unsupported members: {unsupported}"
                 )
 
+        needs_leaves = (
+            "leaf_indices" in requirements.outputs
+            or "leaf_indices" in requirements.capabilities
+        )
+
+        if needs_leaves:
+            from ..models.adapters import get_adapter
+
+            members = (
+                model.members
+                if isinstance(model, Ensemble)
+                else {"model": model}
+            )
+
+            unsupported = [
+                member_name
+                for member_name, member in members.items()
+                if "leaf_indices"
+                not in get_adapter(member).capabilities(member)
+            ]
+
+            if unsupported:
+                raise ValueError(
+                    f"Scorer {name!r} requires leaf_indices; "
+                    f"unsupported members: {unsupported}"
+                )
+
     return None
 
 
@@ -281,6 +314,7 @@ def _predict_map_batch(
     prediction_column: str = DEFAULT_PREDICTION_COLUMN,
     kwargs: Mapping | None = None,
     scorers: tuple = (),
+    resources: Mapping | None = None,
 ) -> dict[str, ...]:
     import numpy as np
 
@@ -315,10 +349,35 @@ def _predict_map_batch(
         for scorer in scorers
     )
 
+    needs_leaves = any(
+        "leaf_indices" in getattr(
+            scorer, "requirements", Requirements()
+        ).outputs
+        or "leaf_indices" in getattr(
+            scorer, "requirements", Requirements()
+        ).capabilities
+        for scorer in scorers
+    )
+
     is_ensemble = isinstance(model, Ensemble)
     member_predictions = None
     member_weights = None
     tree_predictions = None
+
+    if needs_leaves:
+        models = (
+            tuple(model.members.values())
+            if is_ensemble
+            else (model,)
+        )
+
+        resources = dict(resources or {})
+        resources["leaf_indices"] = tuple(
+            np.asarray(
+                get_adapter(member).leaf_indices(member, X)
+            )
+            for member in models
+        )
 
     # Prepare tree resources only if requested.
     if needs_trees:
@@ -426,6 +485,7 @@ def _predict_map_batch(
         member_predictions=member_predictions,
         member_weights=member_weights,
         tree_predictions=tree_predictions,
+        resources=resources or {},
     )
 
     for scorer in scorers:
@@ -862,6 +922,87 @@ class Box:
         prepared = self._unwrap(working_pipeline(data))
         return prepared.with_format(None), working_pipeline
 
+
+    def _prepare_leaf_reference(
+        self,
+        *,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ):
+        """Build sparse leaf counts from fitted training data."""
+        from ..models.adapters import get_adapter
+        from ..scorers.leaves import LeafReferenceBuilder
+
+        # Prefer fitted outputs: transformations have already run.
+        data_out = getattr(self.pipeline, "data_out", None)
+
+        if data_out is not None:
+            reference = self._unwrap(data_out)
+            reference_pipeline = self.pipeline
+
+        elif getattr(self.pipeline, "data_in", None) is not None:
+            # Regenerate from the recorded source using a
+            # clone of the fitted pipeline.
+            reference, reference_pipeline = self._pre_predict(
+                data=None,
+            )
+
+        else:
+            raise ValueError(
+                "Reference scoring requires training data "
+                "in the fitted Aspect pipeline"
+            )
+
+        if hasattr(reference, "with_format"):
+            reference = reference.with_format(None)
+
+        models = (
+            tuple(self.model.members.values())
+            if isinstance(self.model, Ensemble)
+            else (self.model,)
+        )
+
+        builders = [
+            LeafReferenceBuilder() for _ in models
+        ]
+
+        if hasattr(reference, "iter"):
+            batches = reference.iter(batch_size=batch_size)
+
+        elif isinstance(reference, Mapping):
+            n_rows = _data_len(reference)
+            batches = (
+                {
+                    name: values[start:start + batch_size]
+                    for name, values in reference.items()
+                }
+                for start in range(0, n_rows, batch_size)
+            )
+
+        else:
+            raise TypeError(
+                "Training reference must be a Dataset "
+                "or mapping of columns"
+            )
+
+        for batch in batches:
+            if not batch:
+                continue
+
+            (X,) = _matrix(
+                batch,
+                reference_pipeline,
+                (self.features,),
+            )
+
+            for model, builder in zip(models, builders):
+                adapter = get_adapter(model)
+                leaves = adapter.leaf_indices(model, X)
+                builder.update(leaves)
+
+        return tuple(
+            builder.finish() for builder in builders
+        )
+
     def predict(
         self,
         data=None,
@@ -874,7 +1015,7 @@ class Box:
         **kwargs
     ):
         """Predict in batches, optionally computing diagnostics."""
-        from ..scorers import resolve_scorers
+        from ..scorers import Requirements, resolve_scorers
 
         map_kwargs = dict(map_kwargs or {})
 
@@ -905,6 +1046,22 @@ class Box:
                 prepared,
             )
 
+        resources = None
+
+        if any(
+            getattr(
+                scorer,
+                "requirements",
+                Requirements(),
+            ).reference_features
+            for scorer in scorers
+        ):
+            resources = {
+                "leaf_reference": self._prepare_leaf_reference(
+                    batch_size=batch_size,
+                )
+            }
+
         return prepared.map(
             _predict_map_batch,
             batched=True,
@@ -916,6 +1073,7 @@ class Box:
                 "column_groups": (self.features, self.target),
                 "kwargs": kwargs,
                 "scorers": scorers,
+                "resources": resources,
             },
             desc="Predicting",
             **map_kwargs,
