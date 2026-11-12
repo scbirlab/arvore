@@ -210,19 +210,22 @@ class Ensemble:
         from providence.io import save_json
         from ..config import EnsembleManifest
         from .adapters import save_model
+        path = Path(path)
+        entries = []
+
         for index, (name, member) in enumerate(self.members.items()):
             directory = path.parent / "members" / f"{index:04d}"
 
-        artefact = save_model(
-            member,
-            directory,
-            allow_unsafe=allow_unsafe,
-        )
+            artifact = save_model(
+                member,
+                directory,
+                allow_unsafe=allow_unsafe,
+            )
 
-        entries.append({
-            "name": name,
-            "metadata": artefact,
-        })
+            entries.append({
+                "name": name,
+                "metadata": artifact,
+            })
 
         manifest = EnsembleManifest.from_dict({
             "schema_version": EnsembleManifest._version,
@@ -232,7 +235,8 @@ class Ensemble:
         })
 
         save_json(manifest.to_dict(), path)
-        return manifest
+        return None
+
 
     @classmethod
     def load(

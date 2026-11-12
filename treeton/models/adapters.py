@@ -452,7 +452,6 @@ def save_model(
     skip_save: bool = False,
     **kwargs
 ):
-    from ..config import ModelArtifact
 
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -498,14 +497,17 @@ def load_model(
     trusted_types=(),
     **kwargs
 ):
-    from ..config import ModelArtifact
     if not isinstance(artifact, ModelArtifact):
         artifact = ModelArtifact.from_dict(artifact)
 
     path = Path(path)
-    adapter = get_adapter_by_name(artifact.adapter)
-    name = metadata["adapter"]
-    
+    name = artifact.adapter
+
+    if name == "joblib" and not allow_unsafe:
+        raise ValueError(
+            "Joblib checkpoints require allow_unsafe=True"
+        )
+
     adapter = get_adapter_by_name(name)
     filename = artifact.filename
     if filename is None:

@@ -43,7 +43,7 @@ def test_omitted_defaults_remain_omitted():
 
     assert config.n_members == 1
     assert config.seed == 42
-    assert config.to_dict() == raw
+    assert config.to_dict(raw=True) == raw
 
 
 def test_homogeneous_configuration():
@@ -78,7 +78,7 @@ def test_heterogeneous_configuration():
     config = EnsembleConfig.from_dict(raw)
 
     assert len(config.members) == 2
-    assert config.to_dict() == raw
+    assert config.to_dict(raw=True) == raw
 
     with pytest.raises(TypeError):
         config.members["new"] = config.members["rf"]

@@ -1,5 +1,6 @@
 from typing import ClassVar
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field, fields, asdict
 import os
 from math import isfinite
@@ -16,7 +17,7 @@ def _freeze(value):
         return tuple(_freeze(v) for v in value)
     if value is None or type(value) in (str, int, float, bool):
         if type(value) is float and not isfinite(value):
-            raise ValueError(f"Non-finite config value: {valurf}")
+            raise ValueError(f"Non-finite config value: {value}")
         return value
     raise TypeError(
         f"Not JSON-compatible: {type(value).__name__}"
@@ -55,9 +56,30 @@ def _weights(value, n):
     return tuple(value)
 
 
-class FrozenDict(dict):
-    def __setitem__(self, key, value):
-        raise TypeError("Cannot alter a FrozenDict")
+class FrozenDict(Mapping):
+    def __init__(self, data=()):
+        self._data = dict(data)
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self):
+        return len(self._data)
+
+    def __repr__(self):
+        return f"FrozenDict({self._data!r})"
+
+    def __reduce__(self):
+        return (type(self), (self._data,))
+
+    def __deepcopy__(self, memo):
+        result = type(self)(deepcopy(self._data, memo))
+        memo[id(self)] = result
+        return result
+
 
 
 @dataclass(frozen=True)
@@ -91,7 +113,10 @@ class EstimatorConfig:
         if raw:
             return _thaw(self._raw)
         else:
-            return _thaw(asdict(self))
+            return _thaw({
+                key: val for key, val in asdict(self).items() 
+                if not key.startswith("_")
+            })
 
 
 @dataclass(frozen=True)
@@ -130,7 +155,7 @@ class EnsembleConfig:
         has_base = "base" in data
         has_members = "members" in data
 
-        if has_base and has_members:
+        if has_base == has_members:
             raise ValueError("Use `base` or `members`")
 
         if has_members:
@@ -181,8 +206,31 @@ class EnsembleConfig:
             _raw=_freeze(data),
         )
 
-    def to_dict(self):
-        return _thaw(self._raw)
+    def to_dict(self, raw: bool = False):
+        if raw:
+            return _thaw(self._raw)
+
+        result = {
+            "kind": "ensemble",
+            "schema_version": self.schema_version,
+        }
+
+        if self.members is not None:
+            result["members"] = {
+                name: spec.to_dict()
+                for name, spec in self.members.items()
+            }
+        else:
+            result.update({
+                "base": self.base.to_dict(),
+                "n_members": self.n_members,
+                "seed": self.seed,
+            })
+
+        if self.weights is not None:
+            result["weights"] = list(self.weights)
+
+        return result
 
 
 def parse_model_config(data):
@@ -272,7 +320,8 @@ class EnsembleManifest:
                 f"Unsupported ensemble manifest schema version {self.schema_version}; "
                 f"package uses {self._version}"
             )
-
+        if not self.members: 
+            raise ValueError("No members")
         names = [name for name, _ in self.members]
         if (
             any(not isinstance(n, str) or not n for n in names)
