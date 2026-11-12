@@ -187,77 +187,60 @@ class InverseLeafOccupancy:
         capabilities=("leaf_indices",),
     )
 
+    def reference_specs(self, box):
+        """Raw counts and, if requested, empirical calibration."""
+        counts = {"type": "leaf_counts", "version": 1}
+        if self.normalization == "raw":
+            return (counts,)
+        return (
+            counts,
+            {"type": "leaf_percentile", "version": 1,
+             "calibration": "empirical_midrank_v1"},
+        )
+
     def prepare(self, box, *, batch_size=1024):
-        """Reuse cached leaf counts and percentile calibration."""
+        """Prepare shared reference resources once per fitted Box."""
         from ..models.adapters import get_adapter
         from ..models.ensemble import Ensemble
-        from .cache import get_score_cache
         from .reference import feature_batches
-
-        cache = get_score_cache(box)
 
         models = (
             tuple(box.model.members.values())
             if isinstance(box.model, Ensemble)
             else (box.model,)
         )
+        counts_spec = self.reference_specs(box)[0]
 
-        references = cache["leaf_reference"]
-
-        if references is None:
-            builders = [
-                LeafReferenceBuilder()
-                for _ in models
-            ]
-
-            for X in feature_batches(
-                box, batch_size=batch_size
-            ):
+        def build_counts():
+            builders = [LeafReferenceBuilder() for _ in models]
+            for X in feature_batches(box, batch_size=batch_size):
                 for model, builder in zip(models, builders):
-                    leaves = get_adapter(model).leaf_indices(
-                        model, X
-                    )
+                    leaves = get_adapter(model).leaf_indices(model, X)
                     builder.update(leaves)
+            return tuple(builder.finish() for builder in builders)
 
-            references = tuple(
-                builder.finish()
-                for builder in builders
-            )
-            cache["leaf_reference"] = references
-
+        references = box.references.get_or_build(
+            counts_spec, build_counts
+        )
         if self.normalization == "raw":
             return references
 
-        calibrated = cache["leaf_percentile"]
-
-        if calibrated is None:
+        def build_calibration():
             scores = [[] for _ in models]
-
-            for X in feature_batches(
-                box, batch_size=batch_size
-            ):
+            for X in feature_batches(box, batch_size=batch_size):
                 for i, (model, reference) in enumerate(
                     zip(models, references)
                 ):
-                    leaves = get_adapter(model).leaf_indices(
-                        model, X
-                    )
-                    scores[i].append(
-                        reference.inverse_score(leaves)
-                    )
-
-            calibrated = tuple(
-                reference.with_calibration(
-                    np.concatenate(parts)
-                )
-                for reference, parts in zip(
-                    references, scores
-                )
+                    leaves = get_adapter(model).leaf_indices(model, X)
+                    scores[i].append(reference.inverse_score(leaves))
+            return tuple(
+                reference.with_calibration(np.concatenate(parts))
+                for reference, parts in zip(references, scores)
             )
 
-            cache["leaf_percentile"] = calibrated
-
-        return calibrated
+        return box.references.get_or_build(
+            self.reference_specs(box)[1], build_calibration
+        )
 
     def __call__(self, context: ScoreContext) -> NDArray:
         leaves = context.resources.get("leaf_indices")
