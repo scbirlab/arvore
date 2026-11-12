@@ -306,6 +306,7 @@ class Box:
             # Compatibility with arbitrary, non-Ensemble estimators.
             self._model_config_fallback = _json_copy(model_config)
         self._validation_score = None
+        self._scorer_cache = None
 
     @property
     def model_config(self):
@@ -449,6 +450,13 @@ class Box:
             path / manifest["artefacts"]["training_data"],
             **pipeline_kwargs,
         )
+
+        from ..scorers.cache import save_score_cache
+
+        leaf_cache = save_score_cache(self, path)
+        if leaf_cache is not None:
+            manifest["artefacts"]["leaf_reference"] = leaf_cache
+
         save_json(manifest, path / CONFIG_FILENAME)
         return None
 
@@ -499,13 +507,23 @@ class Box:
             path / artefacts["training_data"],
             cache_dir=cache_dir,
         )
-        return cls(
+        box = cls(
             model=model,
             pipeline=pipeline,
             features=config["features"],
             target=config["target"],
             model_config=config.get("model_config"),
         )
+
+        from ..scorers.cache import load_score_cache
+
+        load_score_cache(
+            box,
+            path,
+            artefacts.get("leaf_reference"),
+        )
+
+        return box
 
     def featurize(self, data, *, training: bool = False):
         """Apply the DataPipeline."""
@@ -547,6 +565,9 @@ class Box:
     ):
         """Fit the model using raw training and optional validation and test data."""
         from ..models import get_adapter
+        from ..scorers.cache import invalidate_score_cache
+
+        invalidate_score_cache(self)
 
         training_data, pipeline = self.featurize(
             data, 
@@ -635,6 +656,11 @@ class Box:
 
 
 
+    def clear_score_cache(self):
+        """Invalidate reference diagnostics after external mutation."""
+        from ..scorers.cache import invalidate_score_cache
+        invalidate_score_cache(self)
+
     def _training_reference(self):
         """Return fitted training rows, retaining raw columns."""
         data_out = getattr(self.pipeline, "data_out", None)
@@ -706,7 +732,7 @@ class Box:
             scoring.validate(prepared)
             scoring.prepare(batch_size=batch_size)
 
-        return prepared.map(
+        result = prepared.map(
             _predict_map_batch,
             batched=True,
             batch_size=batch_size,
@@ -724,6 +750,11 @@ class Box:
             desc="Predicting",
             **map_kwargs,
         )
+
+        if scoring is not None:
+            scoring.finalize(result)
+
+        return result
 
     def evaluate(
         self,

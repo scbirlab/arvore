@@ -38,4 +38,4 @@ jobs:
         pytest treeton --doctest-modules -q
     - name: Test with pytest
       run: |
-        pytest test -q
+        pytest -q
