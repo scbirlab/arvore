@@ -161,7 +161,7 @@ class Ensemble:
     @classmethod
     def from_config(cls, config):
         """Construct an ensemble, retaining its model specification."""
-        from ..config import instantiate_object
+        from ..config.instantiate import instantiate_object
         from providence.io import load_json
 
         if isinstance(config, (str, os.PathLike)):
@@ -224,7 +224,7 @@ class Ensemble:
         allow_unsafe: bool = False
     ):
         from providence.io import save_json
-        from .codecs import save_model
+        from .adapters import save_model
         path = Path(path)
         manifest = {
             "schema_version": self.SCHEMA_VERSION,
@@ -264,7 +264,7 @@ class Ensemble:
         allow_unsafe: bool = False,
     ):
         from providence.io import load_json
-        from .codecs import load_model
+        from .adapters import load_model
 
         path = Path(path)
         manifest = load_json(path)
@@ -289,7 +289,7 @@ class Ensemble:
             if not isinstance(name, str) or not name or name in members:
                 raise ValueError("Invalid or duplicate member name")
 
-            if metadata["codec"] == "ensemble":
+            if metadata["adapter"] == "ensemble":
                 raise ValueError(
                     "Nested ensemble checkpoints are unsupported"
                 )

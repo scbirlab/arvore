@@ -17,7 +17,7 @@ else:
     DataPipeline = Any
     Dataset, IterableDataset = Any, Any
 
-from ..config import instantiate_object
+from ..config.instantiate import instantiate_object
 from ..metrics import DEFAULT_METRICS, METRICS_REGISTRY
 from ..typing import Estimator, DataLike, PipelineLike
 
@@ -389,7 +389,7 @@ class Box:
         **pipeline_kwargs
     ) -> None:
         """Save configuration and model state."""
-        from ..models.codecs import save_model
+        from ..models.adapters import save_model
         import joblib
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
@@ -433,7 +433,7 @@ class Box:
     ) -> "Box":
         """Restore a Box checkpoint."""
         from aspect.data import DataPipeline
-        from ..models.codecs import load_model
+        from ..models.adapters import load_model
         import joblib
 
         path = Path(path)
