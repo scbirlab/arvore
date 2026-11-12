@@ -1,11 +1,27 @@
 """Registration and resolution of prediction scorers."""
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 
 from .base import Scorer, ScoreContext
 
 
 SCORER_REGISTRY: dict[str, type[Scorer]] = {}
+
+
+
+@dataclass(frozen=True)
+class NamedScorer:
+    """Delegate to a scorer while overriding its output name."""
+
+    name: str
+    scorer: object
+
+    def __getattr__(self, attribute):
+        return getattr(self.scorer, attribute)
+
+    def __call__(self, context):
+        return self.scorer(context)
 
 
 def register_scorer(cls):
@@ -47,10 +63,26 @@ def resolve_scorers(score):
     if score is None:
         return ()
 
-    if isinstance(score, str) or callable(score):
-        specifications = (score,)
+    if isinstance(score, Mapping):
+        aliases = tuple(score)
+
+        if not all(
+            isinstance(name, str) and name
+            for name in aliases
+        ):
+            raise ValueError(
+                "Scorer aliases must be nonempty strings"
+            )
+
+        specifications = tuple(score.values())
+
     else:
-        specifications = tuple(score)
+        aliases = None
+
+        if isinstance(score, str) or callable(score):
+            specifications = (score,)
+        else:
+            specifications = tuple(score)
 
     resolved = []
 
@@ -76,6 +108,12 @@ def resolve_scorers(score):
             raise TypeError(
                 "Scorers must be names or callables, "
                 f"received {type(specification).__name__}"
+            )
+
+        if aliases is not None:
+            scorer = NamedScorer(
+                name=aliases[len(resolved)],
+                scorer=scorer,
             )
 
         resolved.append(scorer)

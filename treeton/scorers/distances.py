@@ -88,10 +88,28 @@ class EuclideanDistance:
             reference_indices=("euclidean",),
         )
 
-    def __call__(self, context: ScoreContext) -> NDArray:
-        reference = context.resources.get(
-            "euclidean_reference"
+    def prepare(self, box, *, batch_size=1024):
+        """Build the exact training-reference NN index."""
+        from .reference import feature_batches
+
+        blocks = [
+            np.asarray(X, dtype=np.float64)
+            for X in feature_batches(
+                box, batch_size=batch_size
+            )
+        ]
+
+        if not blocks:
+            raise ValueError(
+                "Training reference dataset is empty"
+            )
+
+        return EuclideanReference.build(
+            np.concatenate(blocks, axis=0)
         )
+
+    def __call__(self, context: ScoreContext) -> NDArray:
+        reference = context.state
 
         if reference is None:
             raise ValueError(

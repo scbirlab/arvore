@@ -22,7 +22,6 @@ from ..config.instantiate import instantiate_object
 from ..metrics import DEFAULT_METRICS, METRICS_REGISTRY
 from ..models.ensemble import Ensemble
 from ..typing import Estimator, DataLike, PipelineLike
-from ..scorers import Requirements, Scorer, scorer_name
 
 CONFIG_FILENAME = "config.json"
 DEFAULT_BATCH_SIZE: int = 1024
@@ -182,152 +181,6 @@ def _matrix(
     return blocks
     
 
-def _validate_score_requirements(
-    scorers: Iterable[str | Scorer | Callable] | str | Scorer | Callable,
-    model: Callable,
-    prepared: Dataset | IterableDataset | Mapping
-):
-    """Check scorer compatibility before batch prediction."""
-   
-    available_columns = set(_col_names(prepared))
-
-    for scorer in scorers:
-        name = scorer_name(scorer)
-        requirements = getattr(
-            scorer,
-            "requirements",
-            Requirements(),
-        )
-
-        if not isinstance(requirements, Requirements):
-            raise TypeError(
-                f"Scorer {name!r} must expose Requirements"
-            )
-
-        unsupported_outputs = set(requirements.outputs) - {"prediction", "member_predictions", "tree_predictions", "leaf_indices"}
-        unsupported_capabilities = set(requirements.capabilities) - {"ensemble_members", "tree_predictions", "leaf_indices"}
-
-        if unsupported_outputs or unsupported_capabilities:
-            raise NotImplementedError(
-                f"Scorer {name!r} requests unsupported "
-                f"resources: outputs={unsupported_outputs}, "
-                f"capabilities={unsupported_capabilities}"
-            )
-
-        if requirements.reference_columns:
-            if not callable(
-                getattr(scorer, "prepare_reference", None)
-            ):
-                raise NotImplementedError(
-                    f"Scorer {name!r} requires reference columns "
-                    "but provides no prepare_reference() hook"
-                )
-
-        if (
-            requirements.reference_features
-            and "leaf_indices" not in requirements.outputs
-            and not requirements.reference_indices
-        ):
-            raise NotImplementedError(
-                f"Scorer {name!r} requests unsupported "
-                "reference preparation"
-            )
-
-        unsupported_indices = (
-            set(requirements.reference_indices) - {"euclidean", "tanimoto"}
-        )
-        if unsupported_indices:
-            raise NotImplementedError(
-                f"Unsupported reference indices: "
-                f"{sorted(unsupported_indices)}"
-            )
-
-        if (
-            requirements.reference_indices
-            and not requirements.reference_features
-            and not requirements.reference_columns
-        ):
-            raise ValueError(
-                f"Scorer {name!r} requests a reference index "
-                "without reference_features=True"
-            )
-
-        missing = set(requirements.columns) - available_columns
-        if missing:
-            raise ValueError(
-                f"Scorer {name!r} requires missing columns: "
-                f"{sorted(missing)}"
-            )
-
-        needs_members = (
-            "member_predictions" in requirements.outputs
-            or "ensemble_members" in requirements.capabilities
-        )
-
-        if needs_members:
-            if not isinstance(model, Ensemble) or len(model) < 2:
-                raise ValueError(
-                    f"Scorer {name!r} requires an ensemble "
-                    "with at least two members"
-                )
-
-        needs_trees = (
-            "tree_predictions" in requirements.outputs
-            or "tree_predictions" in requirements.capabilities
-        )
-
-        if needs_trees:
-            from ..models.adapters import get_adapter
-
-            members = (
-                model.members
-                if isinstance(model, Ensemble)
-                else {"model": model}
-            )
-
-            unsupported = [
-                member_name
-                for member_name, member in members.items()
-                if "tree_predictions"
-                not in get_adapter(member).capabilities(member)
-            ]
-
-            if unsupported:
-                raise ValueError(
-                    f"Scorer {name!r} requires tree_predictions; "
-                    f"unsupported members: {unsupported}"
-                )
-
-        needs_leaves = (
-            "leaf_indices" in requirements.outputs
-            or "leaf_indices" in requirements.capabilities
-        )
-
-        if needs_leaves:
-            from ..models.adapters import get_adapter
-
-            members = (
-                model.members
-                if isinstance(model, Ensemble)
-                else {"model": model}
-            )
-
-            unsupported = [
-                member_name
-                for member_name, member in members.items()
-                if "leaf_indices"
-                not in get_adapter(member).capabilities(member)
-            ]
-
-            if unsupported:
-                raise ValueError(
-                    f"Scorer {name!r} requires leaf_indices; "
-                    f"unsupported members: {unsupported}"
-                )
-
-    return None
-
-
 def _predict_map_batch(
     batch: Mapping[str, ...],
     *,
@@ -336,221 +189,57 @@ def _predict_map_batch(
     pipeline: DataPipeline,
     prediction_column: str = DEFAULT_PREDICTION_COLUMN,
     kwargs: Mapping | None = None,
-    scorers: tuple = (),
-    resources: Mapping | None = None,
+    scoring=None,
 ) -> dict[str, ...]:
-    import numpy as np
-
-    from ..models.adapters import get_adapter
-    from ..models.ensemble import Ensemble
-    from ..scorers import (
-        Requirements,
-        ScoreContext,
-        scorer_name,
-    )
+    from ..prediction import predict_batch
+    from ..scorers import ScoreContext
 
     feature_cols, target_cols = column_groups
-    kwargs = dict(kwargs or {})
-    scorers = tuple(scorers or ())
 
-    # Output formatting is independent of scoring.
-    disaggregate = kwargs.pop("disaggregate", False)
-
-    X, *_ = _matrix(
+    (X,) = _matrix(
         batch,
         pipeline,
         column_groups=(feature_cols,),
     )
 
-    needs_trees = any(
-        "tree_predictions" in getattr(
-            scorer, "requirements", Requirements()
-        ).outputs
-        or "tree_predictions" in getattr(
-            scorer, "requirements", Requirements()
-        ).capabilities
-        for scorer in scorers
+    result = predict_batch(
+        model,
+        X,
+        targets=tuple(target_cols),
+        prediction_column=prediction_column,
+        kwargs=kwargs,
+        needs_trees=(
+            scoring.needs_trees if scoring else False
+        ),
+        needs_leaves=(
+            scoring.needs_leaves if scoring else False
+        ),
     )
 
-    needs_leaves = any(
-        "leaf_indices" in getattr(
-            scorer, "requirements", Requirements()
-        ).outputs
-        or "leaf_indices" in getattr(
-            scorer, "requirements", Requirements()
-        ).capabilities
-        for scorer in scorers
-    )
+    output = batch | dict(result.columns)
 
-    is_ensemble = isinstance(model, Ensemble)
-    member_predictions = None
-    member_weights = None
-    tree_predictions = None
-
-    if needs_leaves:
-        models = (
-            tuple(model.members.values())
-            if is_ensemble
-            else (model,)
-        )
-
-        resources = dict(resources or {})
-        resources["leaf_indices"] = tuple(
-            np.asarray(
-                get_adapter(member).leaf_indices(member, X)
-            )
-            for member in models
-        )
-
-    # Prepare tree resources only if requested.
-    if needs_trees:
-        members = (
-            tuple(model.members.values())
-            if is_ensemble
-            else (model,)
-        )
-
-        tree_predictions = tuple(
-            np.asarray(
-                get_adapter(member).tree_predictions(member, X),
-                dtype=float,
-            )
-            for member in members
-        )
-
-    # Obtain ordinary predictions.
-    if is_ensemble:
-        member_weights = np.asarray(
-            model.weights, dtype=float
-        )
-
-        if tree_predictions is not None and not kwargs:
-            # Reuse tree inference for supported forests.
-            member_predictions = np.stack(
-                [
-                    trees.mean(axis=1)
-                    for trees in tree_predictions
-                ],
-                axis=1,
-            )
-        else:
-            member_predictions = model.predict_members(
-                X, **kwargs
-            )
-
-        y_pred = np.average(
-            member_predictions,
-            axis=1,
-            weights=member_weights,
-        )
-
-    elif tree_predictions is not None and not kwargs:
-        y_pred = tree_predictions[0].mean(axis=1)
-
-    else:
-        y_pred = np.asarray(
-            get_adapter(model).predict(model, X, **kwargs)
-        )
-
-    y_pred = np.asarray(y_pred)
-
-    if y_pred.ndim == 1:
-        y_pred = y_pred[:, None]
-
-    expected_shape = (len(X), len(target_cols))
-
-    if y_pred.shape != expected_shape:
-        raise ValueError(
-            f"Expected predictions with shape {expected_shape}, "
-            f"received {y_pred.shape}"
-        )
-
-    # Format prediction columns independently of scorers.
-    if disaggregate and is_ensemble:
-        expected_members = (
-            len(X),
-            len(model.members),
-            len(target_cols),
-        )
-
-        if member_predictions.shape != expected_members:
-            raise ValueError(
-                "Expected member predictions with shape "
-                f"{expected_members}, received "
-                f"{member_predictions.shape}"
-            )
-
-        predicted = {
-            f"{prediction_column}:{target}:{name}":
-                member_predictions[:, member_idx, target_idx]
-            for target_idx, target in enumerate(target_cols)
-            for member_idx, name in enumerate(model.members)
-        }
-
-    else:
-        predicted = {
-            f"{prediction_column}:{target}": values
-            for target, values in zip(target_cols, y_pred.T)
-        }
-
-    output = batch | predicted
-
-    if not scorers:
+    if scoring is None:
         return output
 
-    # Scorers always receive the aggregated prediction.
     context = ScoreContext(
+        box=scoring.box,
         X=X,
-        predictions=y_pred,
+        predictions=result.predictions,
         model=model,
         batch=batch,
         targets=tuple(target_cols),
-        member_predictions=member_predictions,
-        member_weights=member_weights,
-        tree_predictions=tree_predictions,
-        resources=resources or {},
+        member_predictions=result.member_predictions,
+        member_weights=result.member_weights,
+        tree_predictions=result.tree_predictions,
+        resources=result.resources,
     )
 
-    for scorer in scorers:
-        name = scorer_name(scorer)
-
-        try:
-            values = np.asarray(
-                scorer(context),
-                dtype=float,
-            )
-        except (TypeError, ValueError):
-            raise
-
-        if values.shape == (len(X),):
-            columns = {
-                f"score:{name}": values,
-            }
-
-        elif values.shape == expected_shape:
-            columns = {
-                f"score:{name}:{target}": column
-                for target, column in zip(
-                    target_cols, values.T
-                )
-            }
-
-        else:
-            raise ValueError(
-                f"Scorer {name!r} returned shape "
-                f"{values.shape}; expected ({len(X)},) "
-                f"or {expected_shape}"
-            )
-
-        collisions = set(columns) & set(output)
-
-        if collisions:
-            raise ValueError(
-                f"Score output columns already exist: "
-                f"{sorted(collisions)}"
-            )
-
-        output.update(columns)
+    output.update(
+        scoring.score(
+            context,
+            occupied=output.keys(),
+        )
+    )
 
     return output
 
@@ -947,194 +636,37 @@ class Box:
 
 
 
+
     def _prepare_leaf_reference(
         self,
         *,
         batch_size: int = DEFAULT_BATCH_SIZE,
         calibrate: bool = False,
     ):
-        """Prepare reference leaf counts and optional percentiles."""
-        import numpy as np
+        """Compatibility helper; preparation is scorer-owned."""
+        from ..scorers import InverseLeafOccupancy
 
-        from ..models.adapters import get_adapter
-        from ..scorers.leaves import LeafReferenceBuilder
-
-        data_out = getattr(self.pipeline, "data_out", None)
-
-        if data_out is not None:
-            reference = self._unwrap(data_out)
-            reference_pipeline = self.pipeline
-
-        elif getattr(self.pipeline, "data_in", None) is not None:
-            reference, reference_pipeline = self._pre_predict(
-                data=None,
-            )
-
-        else:
-            raise ValueError(
-                "Reference scoring requires training data "
-                "in the fitted Aspect pipeline"
-            )
-
-        if hasattr(reference, "with_format"):
-            reference = reference.with_format(None)
-
-        models = (
-            tuple(self.model.members.values())
-            if isinstance(self.model, Ensemble)
-            else (self.model,)
-        )
-
-        def iter_batches():
-            if hasattr(reference, "iter"):
-                yield from reference.iter(batch_size=batch_size)
-
-            elif isinstance(reference, Mapping):
-                n_rows = _data_len(reference)
-
-                for start in range(0, n_rows, batch_size):
-                    yield {
-                        name: values[start:start + batch_size]
-                        for name, values in reference.items()
-                    }
-
-            else:
-                raise TypeError(
-                    "Training reference must be a Dataset "
-                    "or mapping of columns"
-                )
-
-        builders = [
-            LeafReferenceBuilder() for _ in models
-        ]
-
-        # First pass: build leaf occupancy counts.
-        for batch in iter_batches():
-            if not batch:
-                continue
-
-            (X,) = _matrix(
-                batch,
-                reference_pipeline,
-                (self.features,),
-            )
-
-            for model, builder in zip(models, builders):
-                leaves = get_adapter(model).leaf_indices(model, X)
-                builder.update(leaves)
-
-        references = tuple(
-            builder.finish() for builder in builders
-        )
-
-        if not calibrate:
-            return references
-
-        # Second pass: obtain the reference score distribution
-        # for each model independently.
-        scores = [[] for _ in models]
-
-        for batch in iter_batches():
-            if not batch:
-                continue
-
-            (X,) = _matrix(
-                batch,
-                reference_pipeline,
-                (self.features,),
-            )
-
-            for i, (model, reference_index) in enumerate(
-                zip(models, references)
-            ):
-                leaves = get_adapter(model).leaf_indices(
-                    model, X
-                )
-
-                scores[i].append(
-                    reference_index.inverse_score(leaves)
-                )
-
-        return tuple(
-            reference_index.with_calibration(
-                np.concatenate(parts)
-            )
-            for reference_index, parts in zip(
-                references, scores
+        scorer = InverseLeafOccupancy(
+            normalization=(
+                "reference_percentile"
+                if calibrate else "raw"
             )
         )
-
+        return scorer.prepare(
+            self, batch_size=batch_size
+        )
 
     def _prepare_euclidean_reference(
         self,
         *,
         batch_size: int = DEFAULT_BATCH_SIZE,
     ):
-        """Build an exact NN index in fitted model-feature space."""
-        import numpy as np
+        """Compatibility helper; preparation is scorer-owned."""
+        from ..scorers import EuclideanDistance
 
-        from ..scorers.distances import EuclideanReference
-
-        data_out = getattr(self.pipeline, "data_out", None)
-
-        if data_out is not None:
-            reference = self._unwrap(data_out)
-            reference_pipeline = self.pipeline
-
-        elif getattr(self.pipeline, "data_in", None) is not None:
-            reference, reference_pipeline = self._pre_predict(
-                data=None,
-            )
-
-        else:
-            raise ValueError(
-                "Reference scoring requires training data "
-                "in the fitted Aspect pipeline"
-            )
-
-        if hasattr(reference, "with_format"):
-            reference = reference.with_format(None)
-
-        if hasattr(reference, "iter"):
-            batches = reference.iter(batch_size=batch_size)
-
-        elif isinstance(reference, Mapping):
-            n_rows = _data_len(reference)
-            batches = (
-                {
-                    name: values[start:start + batch_size]
-                    for name, values in reference.items()
-                }
-                for start in range(0, n_rows, batch_size)
-            )
-
-        else:
-            raise TypeError(
-                "Training reference must be a Dataset "
-                "or mapping of columns"
-            )
-
-        blocks = []
-
-        for batch in batches:
-            if not batch:
-                continue
-
-            (X,) = _matrix(
-                batch,
-                reference_pipeline,
-                (self.features,),
-            )
-
-            blocks.append(np.asarray(X, dtype=np.float64))
-
-        if not blocks:
-            raise ValueError("Training reference dataset is empty")
-
-        return EuclideanReference.build(
-            np.concatenate(blocks, axis=0)
+        return EuclideanDistance().prepare(
+            self, batch_size=batch_size
         )
-
 
     def _training_reference(self):
         """Return fitted training rows, retaining raw columns."""
@@ -1167,10 +699,11 @@ class Box:
         map_kwargs: Mapping[str, ...] | None = None,
         *,
         score=None,
-        **kwargs
+        **kwargs,
     ):
-        """Predict in batches, optionally computing diagnostics."""
-        from ..scorers import Requirements, resolve_scorers
+        """Predict in batches with optional composable scorers."""
+        from ..scorers import resolve_scorers
+        from ..scorers.runner import ScoringRunner
 
         map_kwargs = dict(map_kwargs or {})
 
@@ -1194,79 +727,17 @@ class Box:
             pipeline=pipeline,
         )
 
-        # Auxiliary candidate preparation is scorer-owned.
-        for scorer in scorers:
-            prepare = getattr(
-                scorer, "prepare_candidates", None
-            )
-            if prepare is not None:
-                prepared = prepare(prepared)
+        scoring = None
 
         if scorers:
-            _validate_score_requirements(
-                scorers,
-                self.model,
-                prepared,
+            scoring = ScoringRunner(
+                box=self,
+                scorers=scorers,
             )
 
-        requirements = tuple(
-            getattr(scorer, "requirements", Requirements())
-            for scorer in scorers
-        )
-
-        resources = {}
-
-        needs_leaf_reference = any(
-            requirement.reference_features
-            and "leaf_indices" in requirement.outputs
-            for requirement in requirements
-        )
-
-        if needs_leaf_reference:
-            resources["leaf_reference"] = (
-                self._prepare_leaf_reference(
-                    batch_size=batch_size,
-                    calibrate=any(
-                        getattr(
-                            requirement,
-                            "reference_score_distribution",
-                            False,
-                        )
-                        for requirement in requirements
-                    ),
-                )
-            )
-
-        if any(
-            "euclidean" in requirement.reference_indices
-            for requirement in requirements
-        ):
-            resources["euclidean_reference"] = (
-                self._prepare_euclidean_reference(
-                    batch_size=batch_size,
-                )
-            )
-
-        tanimoto = [
-            scorer
-            for scorer, requirement in zip(
-                scorers, requirements
-            )
-            if "tanimoto" in requirement.reference_indices
-        ]
-
-        if tanimoto:
-            if len(tanimoto) != 1:
-                raise ValueError(
-                    "Only one Tanimoto reference configuration "
-                    "is supported per prediction call"
-                )
-
-            resources["tanimoto_reference"] = (
-                tanimoto[0].prepare_reference(
-                    self._training_reference()
-                )
-            )
+            prepared = scoring.prepare_candidates(prepared)
+            scoring.validate(prepared)
+            scoring.prepare(batch_size=batch_size)
 
         return prepared.map(
             _predict_map_batch,
@@ -1276,10 +747,12 @@ class Box:
                 "model": self.model,
                 "pipeline": pipeline,
                 "prediction_column": prediction_column,
-                "column_groups": (self.features, self.target),
+                "column_groups": (
+                    self.features,
+                    self.target,
+                ),
                 "kwargs": kwargs,
-                "scorers": scorers,
-                "resources": resources,
+                "scoring": scoring,
             },
             desc="Predicting",
             **map_kwargs,

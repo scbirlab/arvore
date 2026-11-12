@@ -193,9 +193,66 @@ class InverseLeafOccupancy:
             ),
         )
 
+    def prepare(self, box, *, batch_size=1024):
+        """Build per-model reference indices once."""
+        from ..models.adapters import get_adapter
+        from ..models.ensemble import Ensemble
+        from .reference import feature_batches
+
+        models = (
+            tuple(box.model.members.values())
+            if isinstance(box.model, Ensemble)
+            else (box.model,)
+        )
+
+        builders = [
+            LeafReferenceBuilder() for _ in models
+        ]
+
+        for X in feature_batches(
+            box, batch_size=batch_size
+        ):
+            for model, builder in zip(models, builders):
+                leaves = get_adapter(model).leaf_indices(
+                    model, X
+                )
+                builder.update(leaves)
+
+        references = tuple(
+            builder.finish() for builder in builders
+        )
+
+        if self.normalization != "reference_percentile":
+            return references
+
+        # A second pass is required for exact calibration.
+        scores = [[] for _ in models]
+
+        for X in feature_batches(
+            box, batch_size=batch_size
+        ):
+            for i, (model, reference) in enumerate(
+                zip(models, references)
+            ):
+                leaves = get_adapter(model).leaf_indices(
+                    model, X
+                )
+                scores[i].append(
+                    reference.inverse_score(leaves)
+                )
+
+        return tuple(
+            reference.with_calibration(
+                np.concatenate(parts)
+            )
+            for reference, parts in zip(
+                references, scores
+            )
+        )
+
     def __call__(self, context: ScoreContext) -> NDArray:
         leaves = context.resources.get("leaf_indices")
-        references = context.resources.get("leaf_reference")
+        references = context.state
 
         if leaves is None or references is None:
             raise ValueError(

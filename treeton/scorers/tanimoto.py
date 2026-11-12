@@ -273,10 +273,43 @@ class TanimotoDistance:
             n_bits=n_bits,
         )
 
+    def prepare(self, box, *, batch_size=1024):
+        """Prepare reference fingerprints, with raw-source fallback."""
+        from .reference import training_data
+
+        data = training_data(box)
+        columns = set(data.column_names)
+
+        if (
+            self.column not in columns
+            and self.structure_column not in columns
+        ):
+            # Some fitted pipelines discard auxiliary raw
+            # columns. Recover them from the recorded source.
+            source = getattr(
+                box.pipeline, "data_in", None
+            )
+            if source is not None:
+                source = box._unwrap(source)
+                if hasattr(source, "with_format"):
+                    source = source.with_format(None)
+
+                source_columns = (
+                    set(source.column_names)
+                    if hasattr(source, "column_names")
+                    else set(source)
+                )
+
+                if (
+                    self.column in source_columns
+                    or self.structure_column in source_columns
+                ):
+                    data = source
+
+        return self.prepare_reference(data)
+
     def __call__(self, context: ScoreContext) -> NDArray:
-        reference = context.resources.get(
-            "tanimoto_reference"
-        )
+        reference = context.state
 
         if reference is None:
             raise ValueError(

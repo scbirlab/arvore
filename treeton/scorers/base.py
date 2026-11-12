@@ -34,6 +34,8 @@ class ScoreContext:
     member_weights: NDArray | None = None
     tree_predictions: tuple[NDArray, ...] | None = None
     resources: Mapping[str, Any] = field(default_factory=dict)
+    box: Any = None
+    state: Any = None
 
 
 class Scorer(Protocol):
