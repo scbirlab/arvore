@@ -60,6 +60,54 @@ def _require_validation(
             raise ValueError("Early stopping requires a training validation set")
 
 
+
+def _normalize_leaf_indices(values, n_samples):
+    """Normalise backend leaves to (samples, trees) int64."""
+    import numpy as np
+
+    leaves = np.asarray(values)
+
+    if leaves.ndim == 0:
+        raise ValueError("Expected an array of leaf indices")
+
+    if leaves.ndim == 1:
+        if n_samples == 1:
+            leaves = leaves.reshape(1, -1)
+        elif leaves.shape[0] == n_samples:
+            leaves = leaves.reshape(n_samples, 1)
+        else:
+            raise ValueError("Leaf sample count mismatch")
+
+    elif leaves.shape[0] == n_samples:
+        leaves = leaves.reshape(n_samples, -1)
+
+    else:
+        raise ValueError("Leaf sample count mismatch")
+
+    if leaves.shape[1] == 0:
+        raise ValueError("Model has no trees")
+
+    if not (
+        np.issubdtype(leaves.dtype, np.integer)
+        or np.issubdtype(leaves.dtype, np.floating)
+    ):
+        raise TypeError(
+            f"Leaf indices must be numeric, got {leaves.dtype}"
+        )
+
+    if not np.all(np.isfinite(leaves)):
+        raise ValueError("Non-finite leaf indices")
+
+    if np.any(leaves < 0):
+        raise ValueError("Negative leaf indices")
+
+    if np.issubdtype(leaves.dtype, np.floating):
+        if np.any(leaves != np.floor(leaves)):
+            raise ValueError("Non-integral leaf indices")
+
+    return leaves.astype(np.int64, copy=False)
+
+
 @register_adapter(name="skops")
 class SklearnAdapter:
 
@@ -138,9 +186,81 @@ class SklearnAdapter:
     ):
         return estimator.predict(X, **kwargs)
 
+    def capabilities(self, estimator) -> frozenset[str]:
+        """Advertise supported prediction diagnostics."""
+        from sklearn.ensemble import (
+            ExtraTreesRegressor,
+            RandomForestRegressor,
+        )
+
+        if isinstance(
+            estimator,
+            (RandomForestRegressor, ExtraTreesRegressor),
+        ):
+            return frozenset({"tree_predictions", "leaf_indices"})
+
+        return frozenset()
+
+    def tree_predictions(self, estimator, X):
+        """Return (samples, trees, targets) predictions."""
+        import numpy as np
+        from sklearn.utils.validation import check_is_fitted
+
+        if "tree_predictions" not in self.capabilities(estimator):
+            raise NotImplementedError(
+                f"Tree predictions are unsupported for "
+                f"{type(estimator).__name__}"
+            )
+
+        check_is_fitted(estimator)
+
+        predictions = []
+
+        for tree in estimator.estimators_:
+            values = np.asarray(
+                tree.predict(X),
+                dtype=float,
+            )
+
+            if values.ndim == 1:
+                values = values[:, None]
+
+            predictions.append(values)
+
+        return np.stack(predictions, axis=1)
+
+    def leaf_indices(self, estimator, X):
+        """Return terminal-node indices for each tree."""
+        if "leaf_indices" not in self.capabilities(estimator):
+            raise NotImplementedError(
+                f"Leaf indices unsupported for "
+                f"{type(estimator).__name__}"
+            )
+
+        return _normalize_leaf_indices(
+            estimator.apply(X),
+            len(X),
+        )
 
 @register_adapter(name="xgboost", ext="ubj")
 class XGBoostAdapter(SklearnAdapter):
+
+    def capabilities(self, estimator):
+        if estimator.get_params().get("booster") == "gblinear":
+            return frozenset()
+        return frozenset({"leaf_indices"})
+
+    def leaf_indices(self, estimator, X):
+        if "leaf_indices" not in self.capabilities(estimator):
+            raise NotImplementedError(
+                "Linear XGBoost models have no leaves"
+            )
+
+        return _normalize_leaf_indices(
+            estimator.apply(X),
+            len(X),
+        )
+
 
     def adapter_name(self, estimator, *, allow_unsafe=False):
         from xgboost import XGBRegressor
@@ -208,8 +328,8 @@ class LightGBMPredictor:
     def __init__(self, booster):
         self.booster = booster
 
-    def predict(self, X):
-        return self.booster.predict(X)
+    def predict(self, X, **kwargs):
+        return self.booster.predict(X, **kwargs)
 
     def fit(self, X, y, **kwargs):
         raise RuntimeError(
@@ -221,10 +341,33 @@ class LightGBMPredictor:
 @register_adapter(name="lightgbm", ext="txt")
 class LightGBMAdapter(SklearnAdapter):
 
+    def capabilities(self, estimator):
+        return frozenset({"leaf_indices"})
+
+    def leaf_indices(self, estimator, X):
+        booster = (
+            estimator.booster
+            if isinstance(estimator, LightGBMPredictor)
+            else estimator.booster_
+        )
+
+        return _normalize_leaf_indices(
+            booster.predict(
+                X,
+                pred_leaf=True,
+                num_iteration=None,
+            ),
+            len(X),
+        )
+
+
     restored_trainable = False
 
     def adapter_name(self, estimator, *, allow_unsafe=False):
         from lightgbm import LGBMRegressor
+
+        if isinstance(estimator, LightGBMPredictor):
+            return self.name
         
         return super().adapter_name(
             estimator, 
@@ -235,7 +378,12 @@ class LightGBMAdapter(SklearnAdapter):
     def save(self, model, path, **kwargs):
         # Explicitly preserve the trained ensemble, including
         # its best-iteration prediction behaviour.
-        model.booster_.save_model(str(path))
+        booster = (
+            model.booster
+            if isinstance(model, LightGBMPredictor)
+            else model.booster_
+        )
+        booster.save_model(str(path))
 
     def load(self, path, *, trusted=(), **kwargs):
         import lightgbm as lgb
@@ -292,6 +440,15 @@ class LightGBMAdapter(SklearnAdapter):
 
 @register_adapter(name="catboost", ext="cbm")
 class CatBoostAdapter(SklearnAdapter):
+
+    def capabilities(self, estimator):
+        return frozenset({"leaf_indices"})
+
+    def leaf_indices(self, estimator, X):
+        return _normalize_leaf_indices(
+            estimator.calc_leaf_indexes(X),
+            len(X),
+        )
 
     def adapter_name(self, estimator, *, allow_unsafe=False):
         from catboost import CatBoostRegressor
@@ -389,6 +546,9 @@ def get_adapter(estimator: Estimator) -> FitAdapter:
 
     if isinstance(estimator, Ensemble):
         return EnsembleAdapter()
+
+    if isinstance(estimator, LightGBMPredictor):
+        return LightGBMAdapter()
 
     if "xgboost" in modules:
         from xgboost import XGBModel
