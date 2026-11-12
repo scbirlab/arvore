@@ -192,3 +192,167 @@ def test_tree_sd_batch_independence(regression_data):
         small["score:tree_sd:y"],
         large["score:tree_sd:y"],
     )
+
+
+
+
+@pytest.mark.parametrize(
+    "score",
+    [
+        None,
+        "ensemble_sd",
+        "tree_sd",
+        ["ensemble_sd", "tree_sd"],
+    ],
+)
+def test_disaggregate_independent_of_scoring(
+    regression_data,
+    score,
+):
+    X, y, data = regression_data
+
+    members = {
+        name: RandomForestRegressor(
+            n_estimators=n,
+            random_state=seed,
+        ).fit(X, y)
+        for name, n, seed in [
+            ("a", 11, 1),
+            ("b", 17, 2),
+        ]
+    }
+
+    box = make_box(
+        Ensemble(members, weights=(1, 3)),
+        data,
+    )
+
+    result = box.predict(
+        disaggregate=True,
+        score=score,
+        batch_size=13,
+        map_kwargs={"load_from_cache_file": False},
+    )
+
+    assert "prediction:y" not in result.column_names
+
+    for name, member in members.items():
+        column = f"prediction:y:{name}"
+
+        assert column in result.column_names
+
+        np.testing.assert_allclose(
+            result[column],
+            member.predict(X),
+        )
+
+    if score is not None:
+        requested = (
+            [score] if isinstance(score, str)
+            else score
+        )
+
+        for name in requested:
+            assert f"score:{name}:y" in result.column_names
+
+
+def test_scoring_preserves_prediction_columns(
+    regression_data,
+):
+    X, y, data = regression_data
+
+    members = {
+        str(i): RandomForestRegressor(
+            n_estimators=10,
+            random_state=i,
+        ).fit(X, y)
+        for i in range(2)
+    }
+
+    box = make_box(Ensemble(members), data)
+
+    for disaggregate in (False, True):
+        baseline = box.predict(
+            disaggregate=disaggregate,
+            map_kwargs={"load_from_cache_file": False},
+        )
+
+        scored = box.predict(
+            disaggregate=disaggregate,
+            score=["ensemble_sd", "tree_sd"],
+            map_kwargs={"load_from_cache_file": False},
+        )
+
+        prediction_cols = [
+            c for c in baseline.column_names
+            if c.startswith("prediction:")
+        ]
+
+        scored_prediction_cols = [
+            c for c in scored.column_names
+            if c.startswith("prediction:")
+        ]
+
+        assert prediction_cols == scored_prediction_cols
+
+        for column in prediction_cols:
+            np.testing.assert_allclose(
+                baseline[column],
+                scored[column],
+            )
+
+
+def test_multitarget_disaggregation(regression_data):
+    X, y, data = regression_data
+
+    Y = np.column_stack([y, 2 * y])
+
+    members = {
+        name: RandomForestRegressor(
+            n_estimators=9,
+            random_state=seed,
+        ).fit(X, Y)
+        for name, seed in [("a", 1), ("b", 2)]
+    }
+
+    box = make_box(Ensemble(members), data)
+    box.target = ("y1", "y2")
+
+    result = box.predict(
+        disaggregate=True,
+        score=["ensemble_sd", "tree_sd"],
+        map_kwargs={"load_from_cache_file": False},
+    )
+
+    for name, member in members.items():
+        predicted = member.predict(X)
+
+        for index, target in enumerate(box.target):
+            np.testing.assert_allclose(
+                result[f"prediction:{target}:{name}"],
+                predicted[:, index],
+            )
+
+    for target in box.target:
+        assert f"score:ensemble_sd:{target}" in result.column_names
+        assert f"score:tree_sd:{target}" in result.column_names
+
+
+def test_single_model_disaggregate_noop(regression_data):
+    X, y, data = regression_data
+
+    model = RandomForestRegressor(
+        n_estimators=10,
+        random_state=42,
+    ).fit(X, y)
+
+    box = make_box(model, data)
+
+    result = box.predict(
+        disaggregate=True,
+        score="tree_sd",
+        map_kwargs={"load_from_cache_file": False},
+    )
+
+    assert "prediction:y" in result.column_names
+    assert "score:tree_sd:y" in result.column_names

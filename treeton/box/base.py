@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING, Any, TypeAlias
 from collections.abc import Callable, Mapping, Iterable
 from copy import deepcopy
+from itertools import product
 from pathlib import Path
 import json
 import os
@@ -279,16 +280,24 @@ def _predict_map_batch(
     pipeline: DataPipeline,
     prediction_column: str = DEFAULT_PREDICTION_COLUMN,
     kwargs: Mapping | None = None,
-    scorers: tuple = ()
+    scorers: tuple = (),
 ) -> dict[str, ...]:
     import numpy as np
 
     from ..models.adapters import get_adapter
     from ..models.ensemble import Ensemble
-    from ..scorers import ScoreContext, scorer_name
+    from ..scorers import (
+        Requirements,
+        ScoreContext,
+        scorer_name,
+    )
 
     feature_cols, target_cols = column_groups
     kwargs = dict(kwargs or {})
+    scorers = tuple(scorers or ())
+
+    # Output formatting is independent of scoring.
+    disaggregate = kwargs.pop("disaggregate", False)
 
     X, *_ = _matrix(
         batch,
@@ -296,48 +305,72 @@ def _predict_map_batch(
         column_groups=(feature_cols,),
     )
 
+    needs_trees = any(
+        "tree_predictions" in getattr(
+            scorer, "requirements", Requirements()
+        ).outputs
+        or "tree_predictions" in getattr(
+            scorer, "requirements", Requirements()
+        ).capabilities
+        for scorer in scorers
+    )
+
+    is_ensemble = isinstance(model, Ensemble)
     member_predictions = None
     member_weights = None
+    tree_predictions = None
 
-    if scorers and isinstance(model, Ensemble):
-        disaggregate = kwargs.pop("disaggregate", False)
-        member_predictions = np.asarray(
-            get_adapter(model).predict(
-                model, 
-                X,
-                disaggregate=True,
-                **kwargs,
+    # Prepare tree resources only if requested.
+    if needs_trees:
+        members = (
+            tuple(model.members.values())
+            if is_ensemble
+            else (model,)
+        )
+
+        tree_predictions = tuple(
+            np.asarray(
+                get_adapter(member).tree_predictions(member, X),
+                dtype=float,
             )
+            for member in members
         )
+
+    # Obtain ordinary predictions.
+    if is_ensemble:
         member_weights = np.asarray(
-            model.weights, 
-            dtype=float,
+            model.weights, dtype=float
         )
+
+        if tree_predictions is not None and not kwargs:
+            # Reuse tree inference for supported forests.
+            member_predictions = np.stack(
+                [
+                    trees.mean(axis=1)
+                    for trees in tree_predictions
+                ],
+                axis=1,
+            )
+        else:
+            member_predictions = model.predict_members(
+                X, **kwargs
+            )
+
         y_pred = np.average(
             member_predictions,
             axis=1,
             weights=member_weights,
         )
-        if disaggregate:
-            y_pred0 = member_predictions
-            expected_shape_disagg = (len(X), len(model.weights), len(target_cols))
-            if y_pred0.shape != expected_shape_disagg:
-                raise ValueError(
-                    f"Expected disaggregated predictions with shape {expected_shape_disagg}, "
-                    f"received {y_pred0.shape}"
-                )
-        else:
-            y_pred0 = y_pred
+
+    elif tree_predictions is not None and not kwargs:
+        y_pred = tree_predictions[0].mean(axis=1)
+
     else:
         y_pred = np.asarray(
-            get_adapter(model).predict(
-                model, 
-                X, 
-                **kwargs,
-            )
+            get_adapter(model).predict(model, X, **kwargs)
         )
-        y_pred0 = y_pred
-        disaggregate = kwargs.get("disaggregate", isinstance(model, Ensemble))
+
+    y_pred = np.asarray(y_pred)
 
     if y_pred.ndim == 1:
         y_pred = y_pred[:, None]
@@ -350,24 +383,40 @@ def _predict_map_batch(
             f"received {y_pred.shape}"
         )
 
-    if disaggregate:
+    # Format prediction columns independently of scorers.
+    if disaggregate and is_ensemble:
+        expected_members = (
+            len(X),
+            len(model.members),
+            len(target_cols),
+        )
+
+        if member_predictions.shape != expected_members:
+            raise ValueError(
+                "Expected member predictions with shape "
+                f"{expected_members}, received "
+                f"{member_predictions.shape}"
+            )
+
         predicted = {
-            f"{prediction_column}:{target}:{i}": values
-            for (target, i), values in enumerate(zip(
-                product(target_cols, members.names), 
-                y_pred0.T,
-            ))
+            f"{prediction_column}:{target}:{name}":
+                member_predictions[:, member_idx, target_idx]
+            for target_idx, target in enumerate(target_cols)
+            for member_idx, name in enumerate(model.members)
         }
+
     else:
         predicted = {
             f"{prediction_column}:{target}": values
-            for (target, values) in zip(target_cols, y_pred.T)
+            for target, values in zip(target_cols, y_pred.T)
         }
 
     output = batch | predicted
-    if scorers is None:
+
+    if not scorers:
         return output
 
+    # Scorers always receive the aggregated prediction.
     context = ScoreContext(
         X=X,
         predictions=y_pred,
@@ -376,36 +425,33 @@ def _predict_map_batch(
         targets=tuple(target_cols),
         member_predictions=member_predictions,
         member_weights=member_weights,
+        tree_predictions=tree_predictions,
     )
+
     for scorer in scorers:
         name = scorer_name(scorer)
 
         try:
-            values = scorer(context)
-        except (TypeError, ValueError) as error:
-            raise error
-            # raise ValueError(
-            #     f"Scorer {name!r} must return numeric values"
-            # ) from error
-        else:
             values = np.asarray(
-                values, 
+                scorer(context),
                 dtype=float,
             )
+        except (TypeError, ValueError):
+            raise
 
         if values.shape == (len(X),):
-            # scalar
             columns = {
                 f"score:{name}": values,
             }
+
         elif values.shape == expected_shape:
-            # per target
             columns = {
                 f"score:{name}:{target}": column
                 for target, column in zip(
                     target_cols, values.T
                 )
             }
+
         else:
             raise ValueError(
                 f"Scorer {name!r} returned shape "
@@ -414,6 +460,7 @@ def _predict_map_batch(
             )
 
         collisions = set(columns) & set(output)
+
         if collisions:
             raise ValueError(
                 f"Score output columns already exist: "
