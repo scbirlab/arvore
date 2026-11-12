@@ -637,37 +637,6 @@ class Box:
 
 
 
-    def _prepare_leaf_reference(
-        self,
-        *,
-        batch_size: int = DEFAULT_BATCH_SIZE,
-        calibrate: bool = False,
-    ):
-        """Compatibility helper; preparation is scorer-owned."""
-        from ..scorers import InverseLeafOccupancy
-
-        scorer = InverseLeafOccupancy(
-            normalization=(
-                "reference_percentile"
-                if calibrate else "raw"
-            )
-        )
-        return scorer.prepare(
-            self, batch_size=batch_size
-        )
-
-    def _prepare_euclidean_reference(
-        self,
-        *,
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ):
-        """Compatibility helper; preparation is scorer-owned."""
-        from ..scorers import EuclideanDistance
-
-        return EuclideanDistance().prepare(
-            self, batch_size=batch_size
-        )
-
     def _training_reference(self):
         """Return fitted training rows, retaining raw columns."""
         data_out = getattr(self.pipeline, "data_out", None)

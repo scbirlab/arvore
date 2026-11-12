@@ -6,7 +6,7 @@ from typing import Any, ClassVar
 import numpy as np
 from numpy.typing import NDArray
 
-from .base import Requirements, ScoreContext
+from .base import ScoreContext
 from .registry import register_scorer
 
 
@@ -80,13 +80,6 @@ class EuclideanDistance:
     """Distance to the nearest training reference in feature space."""
 
     name: ClassVar[str] = "euclidean_distance"
-
-    @property
-    def requirements(self) -> Requirements:
-        return Requirements(
-            reference_features=True,
-            reference_indices=("euclidean",),
-        )
 
     def prepare(self, box, *, batch_size=1024):
         """Build the exact training-reference NN index."""

@@ -171,8 +171,6 @@ class TanimotoDistance:
     def requirements(self) -> Requirements:
         return Requirements(
             columns=(self.column,),
-            reference_columns=(self.column,),
-            reference_indices=("tanimoto",),
         )
 
     def _fingerprint_pipeline(self):
@@ -217,7 +215,7 @@ class TanimotoDistance:
             fingerprints,
         )
 
-    def prepare_candidates(self, data):
+    def prepare_candidates(self, data, *, box):
         """Prepare auxiliary columns without changing model features."""
         return self._add_fingerprint(data)
 

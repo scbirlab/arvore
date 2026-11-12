@@ -12,12 +12,8 @@ class Requirements:
     """Resources required to evaluate a scorer."""
 
     columns: tuple[str, ...] = field(default_factory=tuple)
-    reference_columns: tuple[str, ...] = field(default_factory=tuple)
-    outputs: tuple[str, ...] = ("prediction",)
+    outputs: tuple[str, ...] = field(default_factory=tuple)
     capabilities: tuple[str, ...] = field(default_factory=tuple)
-    reference_features: bool = False
-    reference_indices: tuple[str, ...] = field(default_factory=tuple)
-    reference_score_distribution: bool = False
 
 
 @dataclass(frozen=True)
@@ -40,12 +36,6 @@ class ScoreContext:
 
 class Scorer(Protocol):
     """Callable producing one score per sample or target."""
-
-    name: str
-
-    @property
-    def requirements(self) -> Requirements:
-        ...
 
     def __call__(self, context: ScoreContext) -> NDArray:
         ...

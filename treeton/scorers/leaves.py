@@ -182,16 +182,10 @@ class InverseLeafOccupancy:
                 f"Unknown normalization: {self.normalization!r}"
             )
 
-    @property
-    def requirements(self) -> Requirements:
-        return Requirements(
-            outputs=("leaf_indices",),
-            capabilities=("leaf_indices",),
-            reference_features=True,
-            reference_score_distribution=(
-                self.normalization == "reference_percentile"
-            ),
-        )
+    requirements: ClassVar[Requirements] = Requirements(
+        outputs=("leaf_indices",),
+        capabilities=("leaf_indices",),
+    )
 
     def prepare(self, box, *, batch_size=1024):
         """Build per-model reference indices once."""

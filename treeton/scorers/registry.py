@@ -1,47 +1,30 @@
 """Registration and resolution of prediction scorers."""
 
-from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping
 
-from .base import Scorer, ScoreContext
-
-
-SCORER_REGISTRY: dict[str, type[Scorer]] = {}
-
-
-
-@dataclass(frozen=True)
-class NamedScorer:
-    """Delegate to a scorer while overriding its output name."""
-
-    name: str
-    scorer: object
-
-    def __getattr__(self, attribute):
-        return getattr(self.scorer, attribute)
-
-    def __call__(self, context):
-        return self.scorer(context)
+SCORER_REGISTRY = {}
 
 
 def register_scorer(cls):
     """Register a named scorer class."""
-
     name = getattr(cls, "name", None)
 
     if not isinstance(name, str) or not name:
-        raise ValueError("Registered scorers require a name")
+        raise ValueError(
+            "Registered scorers require a nonempty name"
+        )
 
     if name in SCORER_REGISTRY:
-        raise ValueError(f"Scorer {name!r} already registered")
+        raise ValueError(
+            f"Scorer {name!r} already registered"
+        )
 
     SCORER_REGISTRY[name] = cls
     return cls
 
 
-def scorer_name(scorer) -> str:
-    """Resolve a stable name for a scorer or callable."""
-
+def scorer_name(scorer):
+    """Return a default name for a scorer or callable."""
     name = getattr(scorer, "name", None)
 
     if name is None:
@@ -52,41 +35,50 @@ def scorer_name(scorer) -> str:
         )
 
     if not isinstance(name, str) or not name:
-        raise ValueError(f"Scorer must have a nonempty name, but scorer was {scorer}")
+        raise ValueError(
+            f"Scorer has no valid name: {scorer!r}"
+        )
 
     return name
 
 
 def resolve_scorers(score):
-    """Resolve strings, scorer instances and plain callables."""
+    """Resolve scorer specifications to {output_name: callable}.
 
+    Supported inputs:
+      None
+      "registered_name"
+      scorer_instance
+      callable
+      iterable of the above
+      mapping of output names to the above
+
+    A mapping explicitly overrides scorer names.
+    """
     if score is None:
-        return ()
+        return {}
 
     if isinstance(score, Mapping):
-        aliases = tuple(score)
+        specifications = score.items()
 
-        if not all(
-            isinstance(name, str) and name
-            for name in aliases
-        ):
-            raise ValueError(
-                "Scorer aliases must be nonempty strings"
-            )
-
-        specifications = tuple(score.values())
+    elif isinstance(score, str) or callable(score):
+        specifications = ((None, score),)
 
     else:
-        aliases = None
+        try:
+            specifications = (
+                (None, specification)
+                for specification in score
+            )
+        except TypeError as error:
+            raise TypeError(
+                "score must be a scorer, iterable, "
+                "mapping, or None"
+            ) from error
 
-        if isinstance(score, str) or callable(score):
-            specifications = (score,)
-        else:
-            specifications = tuple(score)
+    resolved = {}
 
-    resolved = []
-
-    for specification in specifications:
+    for alias, specification in specifications:
         if isinstance(specification, str):
             try:
                 scorer = SCORER_REGISTRY[specification]()
@@ -106,23 +98,26 @@ def resolve_scorers(score):
 
         else:
             raise TypeError(
-                "Scorers must be names or callables, "
-                f"received {type(specification).__name__}"
+                "Scorer specifications must be "
+                "registered names or callables"
             )
 
-        if aliases is not None:
-            scorer = NamedScorer(
-                name=aliases[len(resolved)],
-                scorer=scorer,
-            )
-
-        resolved.append(scorer)
-
-    names = [scorer_name(s) for s in resolved]
-
-    if len(names) != len(set(names)):
-        raise ValueError(
-            f"Duplicate scorer names: {names}"
+        name = (
+            scorer_name(scorer)
+            if alias is None
+            else alias
         )
 
-    return tuple(resolved)
+        if not isinstance(name, str) or not name:
+            raise ValueError(
+                "Scorer output names must be nonempty strings"
+            )
+
+        if name in resolved:
+            raise ValueError(
+                f"Duplicate scorer output name: {name!r}"
+            )
+
+        resolved[name] = scorer
+
+    return resolved
