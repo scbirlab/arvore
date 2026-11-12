@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, TypeAlias, Protocol
+from typing import TYPE_CHECKING, Any, TypeAlias, Protocol, runtime_checkable
 from collections.abc import Callable, Mapping
 
 from providence.typing import DataLike
@@ -10,6 +10,7 @@ else:
 
 PipelineLike: TypeAlias = DataPipeline | Mapping[str, Any] | str | Callable
 
+@runtime_checkable
 class Estimator(Protocol):
     def fit(X, y, **kwargs):
         ...

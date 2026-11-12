@@ -177,3 +177,78 @@ def test_backend_box_fit(
 
     assert predictions.shape == (3,)
     assert np.isfinite(predictions).all()
+
+
+def test_box_model_config_delegation():
+    from sklearn.ensemble import RandomForestRegressor
+    from treeton import Ensemble
+
+    config = {
+        "kind": "ensemble",
+        "schema_version": 1,
+        "base": {
+            "class_path": "sklearn.ensemble.RandomForestRegressor",
+            "init_args": {"n_estimators": 10},
+        },
+        "n_members": 2,
+        "seed": 42,
+    }
+
+    model = Ensemble.from_config(config)
+
+    box = Box(
+        model=model,
+        features=["x"],
+        target="y",
+    )
+
+    assert box.model_config == config
+    assert box.to_config()["model_config"] == config
+
+    # No duplicated configuration in Box.
+    assert box._model_config_fallback is None
+
+    # Defensive copying.
+    returned = box.model_config
+    returned["base"]["init_args"]["n_estimators"] = 999
+
+    assert model.to_config() == config
+    assert box.model_config == config
+
+
+def test_restored_model_config(tmp_path):
+    from datasets import Dataset
+
+    config = {
+        "model": {
+            "kind": "ensemble",
+            "schema_version": 1,
+            "base": {
+                "class_path": "sklearn.ensemble.RandomForestRegressor",
+                "init_args": {"n_estimators": 10},
+            },
+            "n_members": 2,
+            "seed": 42,
+        },
+        "features": ["x"],
+        "target": ["y"],
+        "pipeline": {},
+    }
+
+    data = Dataset.from_dict({
+        "x": [0., 1., 2., 3., 4.],
+        "y": [0., 1., 4., 9., 16.],
+    })
+
+    box = Box.from_config(config)
+    box.fit(data, skip_eval=True)
+    box.save(tmp_path / "model")
+
+    restored = Box.load(
+        tmp_path / "model",
+        trusted_types=("sklearn.tree._tree.Tree",),
+    )
+
+    assert restored.model.to_config() == config["model"]
+    assert restored.model_config == config["model"]
+    assert restored._model_config_fallback is None

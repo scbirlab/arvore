@@ -21,8 +21,16 @@ class FitAdapter(Protocol):
         *,
         validation: Validation | None = None,
         fit_kwargs: Mapping[str, ...] | None = None,
-        early_stopping_rounds: int | None = None,
+        early_stopping_rounds: int | None = None
     ) -> None:
+        ...
+
+    def predict(
+        self, 
+        estimator: Estimator, 
+        X: ArrayLike,
+        **kwargs
+    ) -> ArrayLike:
         ...
 
 
@@ -60,9 +68,17 @@ class SklearnAdapter:
             )
         estimator.fit(X, y, **_kwargs(fit_kwargs))
 
+    def predict(
+        self,
+        estimator: Estimator, 
+        X: ArrayLike, 
+        **kwargs
+    ):
+        return estimator.predict(X, **kwargs)
+
 
 @dataclass
-class XGBoostAdapter:
+class XGBoostAdapter(SklearnAdapter):
     def fit(
         self, 
         estimator: Estimator, 
@@ -106,7 +122,7 @@ class XGBoostAdapter:
 
 
 @dataclass
-class LightGBMAdapter:
+class LightGBMAdapter(SklearnAdapter):
     def fit(
         self, 
         estimator: Estimator, 
@@ -146,9 +162,7 @@ class LightGBMAdapter:
             )
 
         if validation is not None:
-            X_val, y_val = validation
-            kw["eval_X"] = X_val
-            kw["eval_y"] = y_val
+            kw["eval_set"] = [validation]
 
         if callbacks:
             kw["callbacks"] = callbacks
@@ -157,7 +171,7 @@ class LightGBMAdapter:
 
 
 @dataclass
-class CatBoostAdapter:
+class CatBoostAdapter(SklearnAdapter):
     def fit(
         self, 
         estimator: Estimator, 
@@ -185,10 +199,42 @@ class CatBoostAdapter:
         estimator.fit(X, y, **kw)
 
 
-def get_fit_adapter(estimator: Estimator) -> FitAdapter:
+@dataclass
+class EnsembleAdapter(SklearnAdapter):
+    """Delegate fitting and prediction to member adapters."""
+
+    def fit(
+        self,
+        estimator,
+        X,
+        y,
+        *,
+        validation=None,
+        fit_kwargs=None,
+        early_stopping_rounds=None
+    ):
+        for member in estimator.members.values():
+            adapter = get_adapter(member)
+            adapter.fit(
+                member,
+                X,
+                y,
+                validation=validation,
+                fit_kwargs=fit_kwargs,
+                early_stopping_rounds=early_stopping_rounds,
+            )
+
+    
+
+
+def get_adapter(estimator: Estimator) -> FitAdapter:
     """Select a backend using the estimator's type.
     """
     from sys import modules
+    from .ensemble import Ensemble
+
+    if isinstance(estimator, Ensemble):
+        return EnsembleAdapter()
 
     if "xgboost" in modules:
         from xgboost import XGBModel

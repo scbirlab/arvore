@@ -185,12 +185,16 @@ def _predict_map_batch(
     model,
     column_groups: Iterable[Iterable[str]],
     pipeline: DataPipeline,
-    prediction_column: str = DEFAULT_PREDICTION_COLUMN
+    prediction_column: str = DEFAULT_PREDICTION_COLUMN,
+    kwargs: Mapping | None = None
 ) -> dict[str, ...]:
     import numpy as np
+    from ..models.adapters import get_adapter
+
     feature_cols, target_cols = column_groups
+    kwargs = kwargs or {}
     X, *_ = _matrix(batch, pipeline, column_groups=(feature_cols,))
-    y_pred = np.asarray(model.predict(X))
+    y_pred = np.asarray(get_adapter(model).predict(model, X, **kwargs))
     if y_pred.ndim == 1:
         y_pred = y_pred[:, None]
 
@@ -261,12 +265,32 @@ class Box:
         self.features = features
         self.target = target
 
-        self.model_config = (
-            _json_copy(model_config)
-            if model_config is not None
+        from ..models.ensemble import Ensemble
+
+        self._model_config_fallback = None
+
+        if isinstance(self.model, Ensemble):
+            if model_config is not None:
+                self.model._attach_config(model_config)
+        elif model_config is not None:
+            # Compatibility with arbitrary, non-Ensemble estimators.
+            self._model_config_fallback = _json_copy(model_config)
+        self._validation_score = None
+
+    @property
+    def model_config(self):
+        from ..models.ensemble import Ensemble
+        if isinstance(self.model, Ensemble):
+            return (
+                self.model.to_config()
+                if self.model.has_config
+                else None
+            )
+        return (
+            _json_copy(self._model_config_fallback)
+            if self._model_config_fallback is not None
             else None
         )
-        self._validation_score = None
 
 
     @property
@@ -290,6 +314,8 @@ class Box:
     ) -> "Box":
         """Construct a Box from JSON-compatible configuration."""
         from aspect.data import DataPipeline
+        from ..models.ensemble import Ensemble
+
         if isinstance(config, (str, Path)):
             if os.path.exists(config):
                 config = load_json(str(config))
@@ -315,7 +341,7 @@ class Box:
             )
 
         model_config = _json_copy(model_config)
-        model = instantiate_object(model_config)
+        model = Ensemble.from_config(model_config)
 
         pipeline_config = config.get("pipeline", {})
         pipeline = DataPipeline.from_config(
@@ -327,7 +353,6 @@ class Box:
             features=config.get("features", []),
             target=config.get("target", []),
             pipeline=pipeline,
-            model_config=model_config,
         )
 
     def to_config(
@@ -346,11 +371,7 @@ class Box:
 
         config = {
             "schema_version": self.SCHEMA_VERSION,
-            "model_config": (
-                _json_copy(self.model_config)
-                if self.model_config is not None
-                else None
-            ),
+            "model_config": self.model_config,
             "pipeline": self.pipeline.to_config(),
             "features": list(self.features),
             "target": list(self.target),
@@ -378,10 +399,17 @@ class Box:
             path,
             allow_unsafe=allow_unsafe,
         )
+        from ..models.ensemble import Ensemble
+
+        config = self.to_config()
+
+        if isinstance(self.model, Ensemble):
+            # The ensemble codec persists its own configuration.
+            config["model_config"] = None
         
         manifest = {
             "schema_version": self.SCHEMA_VERSION,
-            "config": self.to_config(),
+            "config": config,
             "model": model_metadata,
             "artefacts": {
                 "training_data": "training-data.as",
@@ -488,7 +516,7 @@ class Box:
         **kwargs
     ):
         """Fit the model using raw training and optional validation and test data."""
-        from ..models import get_fit_adapter
+        from ..models import get_adapter
 
         training_data, pipeline = self.featurize(
             data, 
@@ -528,7 +556,7 @@ class Box:
 
             fit_validation = (X_val, y_val)
 
-        adapter = get_fit_adapter(self.model)
+        adapter = get_adapter(self.model)
         adapter.fit(
             self.model,
             X,
@@ -580,7 +608,8 @@ class Box:
         pipeline: PipelineLike | None = None,
         prediction_column: str = DEFAULT_PREDICTION_COLUMN,
         batch_size: int = DEFAULT_BATCH_SIZE,
-        map_kwargs: Mapping[str, ...] | None = None
+        map_kwargs: Mapping[str, ...] | None = None,
+        **kwargs
     ):
         """Predict over a dataset in bounded-memory batches."""
         map_kwargs = dict(map_kwargs or {})
@@ -599,6 +628,7 @@ class Box:
                 "pipeline": pipeline,
                 "prediction_column": prediction_column,
                 "column_groups": (self.features, self.target),
+                "kwargs": kwargs,
             },
             desc="Predicting",
             **map_kwargs,
