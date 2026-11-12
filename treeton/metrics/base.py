@@ -105,7 +105,7 @@ def rmsd(y_pred, y_true):
     True
 
     """
-
+    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true)
     return np.sqrt(np.mean(np.square(y_pred - y_true)))
 
@@ -114,12 +114,14 @@ rmse = register_metric(rmsd, name="rmse")
 
 @register_metric(name="mae")
 def mae(y_pred, y_true):
+    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true)
     return np.mean(np.abs(y_pred - y_true))
 
 
 @register_metric(name="pearson")
 def pearson_r(y_pred, y_true):
+    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true, broadcast=True)
     return  np.corrcoef(y_pred, y_true)[0, 1]
 
