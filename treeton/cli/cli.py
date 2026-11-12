@@ -77,6 +77,24 @@ def main() -> None:
         help="Cache directory for data loading and preprocessing.",
     )
 
+    score_opt = CLIOption(
+        "--score",
+        nargs="*",
+        default=None,
+        type=str,
+        help=(
+            "Registered prediction scorer. "
+            "Configured scorers can also "
+            "be supplied in the prediction JSON config."
+        ),
+    )
+
+    disaggregate_opt = CLIOption(
+        "--disaggregate",
+        action="store_true",
+        help="Write individual ensemble-member predictions.",
+    )
+
     start = CLIOption(
         "--start",
         default=None,
@@ -136,6 +154,8 @@ def main() -> None:
             allow_trees,
             start,
             stop,
+            score_opt,
+            disaggregate_opt,
             output_name,
             checkpoint_out,
             pipeline_opt,
