@@ -17,6 +17,7 @@ class EuclideanReference:
     index: Any
     n_reference: int
     n_features: int
+    features: NDArray
 
     @classmethod
     def build(cls, X) -> "EuclideanReference":
@@ -45,6 +46,7 @@ class EuclideanReference:
             index=index,
             n_reference=len(X),
             n_features=X.shape[1],
+            features=X,
         )
 
     def distance(self, X) -> NDArray:
@@ -81,24 +83,31 @@ class EuclideanDistance:
 
     name: ClassVar[str] = "euclidean_distance"
 
+    def reference_specs(self, box):
+        return ({
+            "type": "euclidean", "version": 1,
+            "features": list(box.features),
+            "metric": "euclidean", "algorithm": "auto",
+            "n_neighbors": 1, "dtype": "float64",
+        },)
+
     def prepare(self, box, *, batch_size=1024):
-        """Build the exact training-reference NN index."""
+        """Build or reuse the training-reference nearest-neighbour index."""
         from .reference import feature_batches
 
-        blocks = [
-            np.asarray(X, dtype=np.float64)
-            for X in feature_batches(
-                box, batch_size=batch_size
+        def build():
+            blocks = [
+                np.asarray(X, dtype=np.float64)
+                for X in feature_batches(box, batch_size=batch_size)
+            ]
+            if not blocks:
+                raise ValueError("Training reference dataset is empty")
+            return EuclideanReference.build(
+                np.concatenate(blocks, axis=0)
             )
-        ]
 
-        if not blocks:
-            raise ValueError(
-                "Training reference dataset is empty"
-            )
-
-        return EuclideanReference.build(
-            np.concatenate(blocks, axis=0)
+        return box.references.get_or_build(
+            self.reference_specs(box)[0], build
         )
 
     def __call__(self, context: ScoreContext) -> NDArray:
