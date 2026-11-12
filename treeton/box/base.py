@@ -1,13 +1,12 @@
 """Checkpointable, reproducible composition of data processing and tree estimator."""
 
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any
 from collections.abc import Callable, Mapping, Iterable
 from copy import deepcopy
 from pathlib import Path
 import json
 import os
 
-from carabiner import print_err
 from providence.io import save_json, load_json
 
 if TYPE_CHECKING:
@@ -17,8 +16,9 @@ else:
     DataPipeline = Any
     Dataset, IterableDataset = Any, Any
 
-from ..config import instantiate_object
+from ..config.instantiate import instantiate_object
 from ..metrics import DEFAULT_METRICS, METRICS_REGISTRY
+from ..models.ensemble import Ensemble
 from ..typing import Estimator, DataLike, PipelineLike
 
 CONFIG_FILENAME = "config.json"
@@ -185,27 +185,61 @@ def _predict_map_batch(
     model,
     column_groups: Iterable[Iterable[str]],
     pipeline: DataPipeline,
-    prediction_column: str = DEFAULT_PREDICTION_COLUMN
+    prediction_column: str = DEFAULT_PREDICTION_COLUMN,
+    kwargs: Mapping | None = None,
+    scoring=None,
 ) -> dict[str, ...]:
-    import numpy as np
+    from ..prediction import predict_batch
+    from ..scorers import ScoreContext
+
     feature_cols, target_cols = column_groups
-    X, *_ = _matrix(batch, pipeline, column_groups=(feature_cols,))
-    y_pred = np.asarray(model.predict(X))
-    if y_pred.ndim == 1:
-        y_pred = y_pred[:, None]
 
-    expected_shape = (len(X), len(target_cols))
-    if y_pred.shape != expected_shape:
-        raise ValueError(
-            f"Expected predictions with shape {expected_shape}, "
-            f"received {y_pred.shape}"
+    (X,) = _matrix(
+        batch,
+        pipeline,
+        column_groups=(feature_cols,),
+    )
+
+    result = predict_batch(
+        model,
+        X,
+        targets=tuple(target_cols),
+        prediction_column=prediction_column,
+        kwargs=kwargs,
+        needs_trees=(
+            scoring.needs_trees if scoring else False
+        ),
+        needs_leaves=(
+            scoring.needs_leaves if scoring else False
+        ),
+    )
+
+    output = batch | dict(result.columns)
+
+    if scoring is None:
+        return output
+
+    context = ScoreContext(
+        box=scoring.box,
+        X=X,
+        predictions=result.predictions,
+        model=model,
+        batch=batch,
+        targets=tuple(target_cols),
+        member_predictions=result.member_predictions,
+        member_weights=result.member_weights,
+        tree_predictions=result.tree_predictions,
+        resources=result.resources,
+    )
+
+    output.update(
+        scoring.score(
+            context,
+            occupied=output.keys(),
         )
+    )
 
-    predicted = {
-        f"{prediction_column}:{target}": p
-        for target, p in zip(target_cols, y_pred.T)
-    }
-    return batch | predicted
+    return output
 
 
 class Box:
@@ -261,12 +295,33 @@ class Box:
         self.features = features
         self.target = target
 
-        self.model_config = (
-            _json_copy(model_config)
-            if model_config is not None
+        from ..models.ensemble import Ensemble
+
+        self._model_config_fallback = None
+
+        if isinstance(self.model, Ensemble):
+            if model_config is not None:
+                self.model._attach_config(model_config)
+        elif model_config is not None:
+            # Compatibility with arbitrary, non-Ensemble estimators.
+            self._model_config_fallback = _json_copy(model_config)
+        self._validation_score = None
+        self._scorer_cache = None
+
+    @property
+    def model_config(self):
+        from ..models.ensemble import Ensemble
+        if isinstance(self.model, Ensemble):
+            return (
+                self.model.to_config()
+                if self.model.has_config
+                else None
+            )
+        return (
+            _json_copy(self._model_config_fallback)
+            if self._model_config_fallback is not None
             else None
         )
-        self._validation_score = None
 
 
     @property
@@ -290,6 +345,8 @@ class Box:
     ) -> "Box":
         """Construct a Box from JSON-compatible configuration."""
         from aspect.data import DataPipeline
+        from ..models.ensemble import Ensemble
+
         if isinstance(config, (str, Path)):
             if os.path.exists(config):
                 config = load_json(str(config))
@@ -315,7 +372,7 @@ class Box:
             )
 
         model_config = _json_copy(model_config)
-        model = instantiate_object(model_config)
+        model = Ensemble.from_config(model_config)
 
         pipeline_config = config.get("pipeline", {})
         pipeline = DataPipeline.from_config(
@@ -327,7 +384,6 @@ class Box:
             features=config.get("features", []),
             target=config.get("target", []),
             pipeline=pipeline,
-            model_config=model_config,
         )
 
     def to_config(
@@ -346,11 +402,7 @@ class Box:
 
         config = {
             "schema_version": self.SCHEMA_VERSION,
-            "model_config": (
-                _json_copy(self.model_config)
-                if self.model_config is not None
-                else None
-            ),
+            "model_config": self.model_config,
             "pipeline": self.pipeline.to_config(),
             "features": list(self.features),
             "target": list(self.target),
@@ -368,7 +420,7 @@ class Box:
         **pipeline_kwargs
     ) -> None:
         """Save configuration and model state."""
-        from ..models.codecs import save_model
+        from ..models.adapters import save_model
         import joblib
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
@@ -378,10 +430,17 @@ class Box:
             path,
             allow_unsafe=allow_unsafe,
         )
+        from ..models.ensemble import Ensemble
+
+        config = self.to_config()
+
+        if isinstance(self.model, Ensemble):
+            # The ensemble codec persists its own configuration.
+            config["model_config"] = None
         
         manifest = {
             "schema_version": self.SCHEMA_VERSION,
-            "config": self.to_config(),
+            "config": config,
             "model": model_metadata,
             "artefacts": {
                 "training_data": "training-data.as",
@@ -391,6 +450,13 @@ class Box:
             path / manifest["artefacts"]["training_data"],
             **pipeline_kwargs,
         )
+
+        from ..scorers.cache import save_score_cache
+
+        leaf_cache = save_score_cache(self, path)
+        if leaf_cache is not None:
+            manifest["artefacts"]["leaf_reference"] = leaf_cache
+
         save_json(manifest, path / CONFIG_FILENAME)
         return None
 
@@ -405,7 +471,7 @@ class Box:
     ) -> "Box":
         """Restore a Box checkpoint."""
         from aspect.data import DataPipeline
-        from ..models.codecs import load_model
+        from ..models.adapters import load_model
         import joblib
 
         path = Path(path)
@@ -441,13 +507,23 @@ class Box:
             path / artefacts["training_data"],
             cache_dir=cache_dir,
         )
-        return cls(
+        box = cls(
             model=model,
             pipeline=pipeline,
             features=config["features"],
             target=config["target"],
             model_config=config.get("model_config"),
         )
+
+        from ..scorers.cache import load_score_cache
+
+        load_score_cache(
+            box,
+            path,
+            artefacts.get("leaf_reference"),
+        )
+
+        return box
 
     def featurize(self, data, *, training: bool = False):
         """Apply the DataPipeline."""
@@ -488,7 +564,10 @@ class Box:
         **kwargs
     ):
         """Fit the model using raw training and optional validation and test data."""
-        from ..models import get_fit_adapter
+        from ..models import get_adapter
+        from ..scorers.cache import invalidate_score_cache
+
+        invalidate_score_cache(self)
 
         training_data, pipeline = self.featurize(
             data, 
@@ -528,7 +607,7 @@ class Box:
 
             fit_validation = (X_val, y_val)
 
-        adapter = get_fit_adapter(self.model)
+        adapter = get_adapter(self.model)
         adapter.fit(
             self.model,
             X,
@@ -574,23 +653,86 @@ class Box:
         prepared = self._unwrap(working_pipeline(data))
         return prepared.with_format(None), working_pipeline
 
+
+
+
+    def clear_score_cache(self):
+        """Invalidate reference diagnostics after external mutation."""
+        from ..scorers.cache import invalidate_score_cache
+        invalidate_score_cache(self)
+
+    def _training_reference(self):
+        """Return fitted training rows, retaining raw columns."""
+        data_out = getattr(self.pipeline, "data_out", None)
+
+        if data_out is not None:
+            data = self._unwrap(data_out)
+
+        elif getattr(self.pipeline, "data_in", None) is not None:
+            data, _ = self._pre_predict(data=None)
+
+        else:
+            raise ValueError(
+                "Reference scoring requires training data "
+                "in the fitted Aspect pipeline"
+            )
+
+        return (
+            data.with_format(None)
+            if hasattr(data, "with_format")
+            else data
+        )
+
     def predict(
         self,
         data=None,
         pipeline: PipelineLike | None = None,
         prediction_column: str = DEFAULT_PREDICTION_COLUMN,
         batch_size: int = DEFAULT_BATCH_SIZE,
-        map_kwargs: Mapping[str, ...] | None = None
+        map_kwargs: Mapping[str, ...] | None = None,
+        *,
+        score=None,
+        **kwargs,
     ):
-        """Predict over a dataset in bounded-memory batches."""
+        """Predict in batches with optional composable scorers."""
+        from ..scorers import resolve_scorers
+        from ..scorers.runner import ScoringRunner
+
         map_kwargs = dict(map_kwargs or {})
+
         if batch_size < 1:
-            raise ValueError(f"batch_size must be positive ({batch_size})")
+            raise ValueError(
+                f"batch_size must be positive ({batch_size})"
+            )
+
+        scorers = resolve_scorers(score)
+
+        if (
+            scorers
+            and map_kwargs.get("num_proc", 1) not in (None, 1)
+        ):
+            raise ValueError(
+                "Multiprocess scoring is not supported yet"
+            )
+
         prepared, pipeline = self._pre_predict(
             data=data,
-            pipeline=pipeline
+            pipeline=pipeline,
         )
-        return prepared.map(
+
+        scoring = None
+
+        if scorers:
+            scoring = ScoringRunner(
+                box=self,
+                scorers=scorers,
+            )
+
+            prepared = scoring.prepare_candidates(prepared)
+            scoring.validate(prepared)
+            scoring.prepare(batch_size=batch_size)
+
+        result = prepared.map(
             _predict_map_batch,
             batched=True,
             batch_size=batch_size,
@@ -598,11 +740,21 @@ class Box:
                 "model": self.model,
                 "pipeline": pipeline,
                 "prediction_column": prediction_column,
-                "column_groups": (self.features, self.target),
+                "column_groups": (
+                    self.features,
+                    self.target,
+                ),
+                "kwargs": kwargs,
+                "scoring": scoring,
             },
             desc="Predicting",
             **map_kwargs,
         )
+
+        if scoring is not None:
+            scoring.finalize(result)
+
+        return result
 
     def evaluate(
         self,

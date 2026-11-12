@@ -1,29 +1,48 @@
 
 """Minimal fit adapters for sklearn-compatible estimators."""
 
-from typing import Any, Protocol, TypeAlias
 from collections.abc import Mapping
-from dataclasses import dataclass
+from hashlib import sha256
+import os
+from pathlib import Path
 
+from carabiner.decorators import decorator_with_params
 from numpy.typing import ArrayLike
 
-from ..typing import Estimator
+from ..config import ModelArtifact
+from ..typing import Estimator, FitAdapter, Validation
 
-Validation: TypeAlias = tuple[ArrayLike, ArrayLike] | None
+ADAPTERS: dict[str, FitAdapter] = {}
+
+PACKAGES: dict[str, str] = {}
 
 
-class FitAdapter(Protocol):
-    def fit(
-        self,
-        estimator: Estimator,
-        X: ArrayLike,
-        y: ArrayLike,
-        *,
-        validation: Validation | None = None,
-        fit_kwargs: Mapping[str, ...] | None = None,
-        early_stopping_rounds: int | None = None,
-    ) -> None:
-        ...
+def _class_path(obj):
+    cls = type(obj)
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
+def _backend_version(adapter_name: str) -> str:
+    """Return the version of the installed codec backend."""
+    from importlib import import_module
+
+    module_name = PACKAGES[adapter_name]
+    module = import_module(module_name)
+    return module.__version__
+
+
+@decorator_with_params
+def register_adapter(
+    fn: FitAdapter, 
+    name: str, 
+    ext: str | None = None,
+    package: str | None = None
+) -> FitAdapter:
+    fn.name = name
+    fn.filename = f"model.{ext or name}"
+    ADAPTERS[name] = fn() if isinstance(fn, type) else fn
+    PACKAGES[name] = package or name
+    return fn
 
 
 def _kwargs(fit_kwargs: Mapping[str, ...] | None):
@@ -41,8 +60,107 @@ def _require_validation(
             raise ValueError("Early stopping requires a training validation set")
 
 
-@dataclass
+
+def _normalize_leaf_indices(values, n_samples):
+    """Normalise backend leaves to (samples, trees) int64."""
+    import numpy as np
+
+    leaves = np.asarray(values)
+
+    if leaves.ndim == 0:
+        raise ValueError("Expected an array of leaf indices")
+
+    if leaves.ndim == 1:
+        if n_samples == 1:
+            leaves = leaves.reshape(1, -1)
+        elif leaves.shape[0] == n_samples:
+            leaves = leaves.reshape(n_samples, 1)
+        else:
+            raise ValueError("Leaf sample count mismatch")
+
+    elif leaves.shape[0] == n_samples:
+        leaves = leaves.reshape(n_samples, -1)
+
+    else:
+        raise ValueError("Leaf sample count mismatch")
+
+    if leaves.shape[1] == 0:
+        raise ValueError("Model has no trees")
+
+    if not (
+        np.issubdtype(leaves.dtype, np.integer)
+        or np.issubdtype(leaves.dtype, np.floating)
+    ):
+        raise TypeError(
+            f"Leaf indices must be numeric, got {leaves.dtype}"
+        )
+
+    if not np.all(np.isfinite(leaves)):
+        raise ValueError("Non-finite leaf indices")
+
+    if np.any(leaves < 0):
+        raise ValueError("Negative leaf indices")
+
+    if np.issubdtype(leaves.dtype, np.floating):
+        if np.any(leaves != np.floor(leaves)):
+            raise ValueError("Non-integral leaf indices")
+
+    return leaves.astype(np.int64, copy=False)
+
+
+@register_adapter(name="skops")
 class SklearnAdapter:
+
+    name = None
+    filename = None
+    restored_trainable: bool = True
+
+    def save(self, model, path, **kwargs):
+        import skops.io as sio
+        sio.dump(model, path)
+
+    def load(self, path, *, trusted=(), **kwargs):
+        import skops.io as sio
+
+        unknown = sio.get_untrusted_types(file=path)
+        disallowed = set(unknown) - set(trusted)
+        if disallowed:
+            raise ValueError(
+                "Untrusted model types in skops checkpoint: "
+                f"{sorted(disallowed)}. Review these types "
+                "before explicitly trusting them."
+            )
+        return sio.load(
+            path, 
+            trusted=list(trusted),
+        )
+
+    def adapter_name(
+        self, 
+        estimator: Estimator,
+        *,
+        _class=None,
+        allow_unsafe: bool = False
+    ) -> str:
+        """Choose a compatible serialization format."""
+
+        if _class is not None and isinstance(_class, type):
+            if isinstance(estimator, _class):
+                return self.name
+
+        # The normal sklearn serialization path.
+        if type(estimator).__module__.startswith("sklearn."):
+            return "skops"
+        
+        if allow_unsafe:
+            return "joblib"
+        else:
+            raise TypeError(
+                f"No supported codec for "
+                f"{_class_path(estimator)}. "
+                "Use allow_unsafe=True to enable arbitrary binary serialization."
+            )
+
     def fit(
         self, 
         estimator: Estimator, 
@@ -60,9 +178,108 @@ class SklearnAdapter:
             )
         estimator.fit(X, y, **_kwargs(fit_kwargs))
 
+    def predict(
+        self,
+        estimator: Estimator, 
+        X: ArrayLike, 
+        **kwargs
+    ):
+        return estimator.predict(X, **kwargs)
 
-@dataclass
-class XGBoostAdapter:
+    def capabilities(self, estimator) -> frozenset[str]:
+        """Advertise supported prediction diagnostics."""
+        from sklearn.ensemble import (
+            ExtraTreesRegressor,
+            RandomForestRegressor,
+        )
+
+        if isinstance(
+            estimator,
+            (RandomForestRegressor, ExtraTreesRegressor),
+        ):
+            return frozenset({"tree_predictions", "leaf_indices"})
+
+        return frozenset()
+
+    def tree_predictions(self, estimator, X):
+        """Return (samples, trees, targets) predictions."""
+        import numpy as np
+        from sklearn.utils.validation import check_is_fitted
+
+        if "tree_predictions" not in self.capabilities(estimator):
+            raise NotImplementedError(
+                f"Tree predictions are unsupported for "
+                f"{type(estimator).__name__}"
+            )
+
+        check_is_fitted(estimator)
+
+        predictions = []
+
+        for tree in estimator.estimators_:
+            values = np.asarray(
+                tree.predict(X),
+                dtype=float,
+            )
+
+            if values.ndim == 1:
+                values = values[:, None]
+
+            predictions.append(values)
+
+        return np.stack(predictions, axis=1)
+
+    def leaf_indices(self, estimator, X):
+        """Return terminal-node indices for each tree."""
+        if "leaf_indices" not in self.capabilities(estimator):
+            raise NotImplementedError(
+                f"Leaf indices unsupported for "
+                f"{type(estimator).__name__}"
+            )
+
+        return _normalize_leaf_indices(
+            estimator.apply(X),
+            len(X),
+        )
+
+@register_adapter(name="xgboost", ext="ubj")
+class XGBoostAdapter(SklearnAdapter):
+
+    def capabilities(self, estimator):
+        if estimator.get_params().get("booster") == "gblinear":
+            return frozenset()
+        return frozenset({"leaf_indices"})
+
+    def leaf_indices(self, estimator, X):
+        if "leaf_indices" not in self.capabilities(estimator):
+            raise NotImplementedError(
+                "Linear XGBoost models have no leaves"
+            )
+
+        return _normalize_leaf_indices(
+            estimator.apply(X),
+            len(X),
+        )
+
+
+    def adapter_name(self, estimator, *, allow_unsafe=False):
+        from xgboost import XGBRegressor
+        return super().adapter_name(
+            estimator, 
+            allow_unsafe=allow_unsafe,
+            _class=XGBRegressor,
+        )
+
+    def save(self, model, path, **kwargs):
+        model.save_model(str(path))
+
+    def load(self, path, *, trusted=(), **kwargs):
+        from xgboost import XGBRegressor
+
+        model = XGBRegressor()
+        model.load_model(str(path))
+        return model
+
     def fit(
         self, 
         estimator: Estimator, 
@@ -105,8 +322,75 @@ class XGBoostAdapter:
         estimator.fit(X, y, **kw)
 
 
-@dataclass
-class LightGBMAdapter:
+class LightGBMPredictor:
+    """Inference-only wrapper preserving the Box prediction API."""
+
+    def __init__(self, booster):
+        self.booster = booster
+
+    def predict(self, X, **kwargs):
+        return self.booster.predict(X, **kwargs)
+
+    def fit(self, X, y, **kwargs):
+        raise RuntimeError(
+            "Native LightGBM checkpoints are inference-only. "
+            "Create a new estimator to retrain."
+        )
+
+
+@register_adapter(name="lightgbm", ext="txt")
+class LightGBMAdapter(SklearnAdapter):
+
+    def capabilities(self, estimator):
+        return frozenset({"leaf_indices"})
+
+    def leaf_indices(self, estimator, X):
+        booster = (
+            estimator.booster
+            if isinstance(estimator, LightGBMPredictor)
+            else estimator.booster_
+        )
+
+        return _normalize_leaf_indices(
+            booster.predict(
+                X,
+                pred_leaf=True,
+                num_iteration=None,
+            ),
+            len(X),
+        )
+
+
+    restored_trainable = False
+
+    def adapter_name(self, estimator, *, allow_unsafe=False):
+        from lightgbm import LGBMRegressor
+
+        if isinstance(estimator, LightGBMPredictor):
+            return self.name
+        
+        return super().adapter_name(
+            estimator, 
+            allow_unsafe=allow_unsafe,
+            _class=LGBMRegressor,
+        )
+
+    def save(self, model, path, **kwargs):
+        # Explicitly preserve the trained ensemble, including
+        # its best-iteration prediction behaviour.
+        booster = (
+            model.booster
+            if isinstance(model, LightGBMPredictor)
+            else model.booster_
+        )
+        booster.save_model(str(path))
+
+    def load(self, path, *, trusted=(), **kwargs):
+        import lightgbm as lgb
+
+        booster = lgb.Booster(model_file=str(path))
+        return LightGBMPredictor(booster)
+
     def fit(
         self, 
         estimator: Estimator, 
@@ -146,9 +430,7 @@ class LightGBMAdapter:
             )
 
         if validation is not None:
-            X_val, y_val = validation
-            kw["eval_X"] = X_val
-            kw["eval_y"] = y_val
+            kw["eval_set"] = [validation]
 
         if callbacks:
             kw["callbacks"] = callbacks
@@ -156,8 +438,37 @@ class LightGBMAdapter:
         estimator.fit(X, y, **kw)
 
 
-@dataclass
-class CatBoostAdapter:
+@register_adapter(name="catboost", ext="cbm")
+class CatBoostAdapter(SklearnAdapter):
+
+    def capabilities(self, estimator):
+        return frozenset({"leaf_indices"})
+
+    def leaf_indices(self, estimator, X):
+        return _normalize_leaf_indices(
+            estimator.calc_leaf_indexes(X),
+            len(X),
+        )
+
+    def adapter_name(self, estimator, *, allow_unsafe=False):
+        from catboost import CatBoostRegressor
+        
+        return super().adapter_name(
+            estimator, 
+            allow_unsafe=allow_unsafe,
+            _class=CatBoostRegressor,
+        )
+
+    def save(self, model, path, **kwargs):
+        model.save_model(str(path), format="cbm")
+
+    def load(self, path, *, trusted=(), **kwargs):
+        from catboost import CatBoostRegressor
+
+        model = CatBoostRegressor()
+        model.load_model(str(path), format="cbm")
+        return model
+
     def fit(
         self, 
         estimator: Estimator, 
@@ -185,10 +496,59 @@ class CatBoostAdapter:
         estimator.fit(X, y, **kw)
 
 
-def get_fit_adapter(estimator: Estimator) -> FitAdapter:
+@register_adapter(name="ensemble", ext="json", package="treeton")
+class EnsembleAdapter(SklearnAdapter):
+
+    def adapter_name(self, estimator, *, allow_unsafe=False):
+        return self.name
+
+    def save(self, model, path, *, allow_unsafe=False, **kwargs):
+        model.save(path, allow_unsafe=allow_unsafe)
+
+    def load(
+        self, path, *, trusted=(), allow_unsafe=False, **kwargs
+    ):
+        from .ensemble import Ensemble
+
+        return Ensemble.load(
+            path,
+            trusted=trusted,
+            allow_unsafe=allow_unsafe,
+        )
+
+    def fit(
+        self,
+        estimator,
+        X,
+        y,
+        *,
+        validation=None,
+        fit_kwargs=None,
+        early_stopping_rounds=None
+    ):
+        for member in estimator.members.values():
+            adapter = get_adapter(member)
+            adapter.fit(
+                member,
+                X,
+                y,
+                validation=validation,
+                fit_kwargs=fit_kwargs,
+                early_stopping_rounds=early_stopping_rounds,
+            )
+
+    
+def get_adapter(estimator: Estimator) -> FitAdapter:
     """Select a backend using the estimator's type.
     """
     from sys import modules
+    from .ensemble import Ensemble
+
+    if isinstance(estimator, Ensemble):
+        return EnsembleAdapter()
+
+    if isinstance(estimator, LightGBMPredictor):
+        return LightGBMAdapter()
 
     if "xgboost" in modules:
         from xgboost import XGBModel
@@ -206,3 +566,129 @@ def get_fit_adapter(estimator: Estimator) -> FitAdapter:
             return CatBoostAdapter()
 
     return SklearnAdapter()
+
+
+@register_adapter(name="joblib", ext="joblib")
+class JoblibAdapter(SklearnAdapter):
+    """Explicitly unsafe whole-object persistence."""
+
+    def save(self, model, path, **kwargs):
+        import joblib
+        joblib.dump(model, path)
+
+    def load(self, path, *, trusted=(), allow_unsafe=False, **kwargs):
+        if not allow_unsafe:
+            raise ValueError(
+                "Joblib checkpoints require allow_unsafe=True"
+            )
+        import joblib
+        return joblib.load(path)
+
+
+def get_adapter_by_name(name: str):
+    """Resolve a saved backend identifier."""
+    try:
+        return ADAPTERS[name]
+    except KeyError as error:
+        raise ValueError(
+            f"Unknown model codec: {name}"
+        ) from error
+
+
+def get_serialization_adapter(model, *, allow_unsafe=False):
+    """Resolve persistence through the estimator's backend."""
+    adapter = get_adapter(model)
+    name = adapter.adapter_name(
+        model,
+        allow_unsafe=allow_unsafe,
+    )
+    return get_adapter_by_name(name)
+
+
+def save_model(
+    model, 
+    path: str | os.PathLike, 
+    *,
+    skip_save: bool = False,
+    **kwargs
+):
+
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+    adapter = get_serialization_adapter(
+        model,
+        allow_unsafe=kwargs.get("allow_unsafe", False),
+    )
+    path = path / adapter.filename
+    if not skip_save:
+        adapter.save(model, path,  **kwargs)
+    if skip_save:
+        trainable = True
+    elif adapter.name == "ensemble":
+        from providence.io import load_json
+
+        manifest = load_json(path)
+        trainable = all(
+            entry["metadata"]["trainable"]
+            for entry in manifest["members"]
+        )
+    else:
+        trainable = adapter.restored_trainable
+
+    return ModelArtifact(
+        adapter=adapter.name,
+        filename=adapter.filename if not skip_save else None,
+        class_path=_class_path(model),
+        version=_backend_version(adapter.name),
+        sha256=(
+            sha256(path.read_bytes()).hexdigest()
+            if not skip_save else None
+        ),
+        trainable=trainable,
+    ).to_dict()
+
+
+def load_model(
+    path: str | os.PathLike,
+    artifact: ModelArtifact | Mapping,
+    *,
+    allow_unsafe: bool = False,
+    trusted_types=(),
+    **kwargs
+):
+    if not isinstance(artifact, ModelArtifact):
+        artifact = ModelArtifact.from_dict(artifact)
+
+    path = Path(path)
+    name = artifact.adapter
+
+    if name == "joblib" and not allow_unsafe:
+        raise ValueError(
+            "Joblib checkpoints require allow_unsafe=True"
+        )
+
+    adapter = get_adapter_by_name(name)
+    filename = artifact.filename
+    if filename is None:
+        if artifact.sha256 is None:
+            raise ValueError(f"Cannot load from checkpoint where mdoel svaing was skipped")
+        else:
+            raise FileNotFoundError(f"Checksum exists but filename is missing")
+    if filename != adapter.filename:
+        raise ValueError(
+            f"Unexpected filename for adapter {name}: {filename}"
+        )
+
+    path = path / filename
+    digest = sha256(path.read_bytes()).hexdigest()
+
+    if digest != artifact.sha256:
+        raise ValueError("Model checkpoint checksum mismatch")
+
+    return adapter.load(
+        path, 
+        trusted=tuple(trusted_types),
+        allow_unsafe=allow_unsafe,
+        **kwargs
+    )

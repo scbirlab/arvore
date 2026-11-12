@@ -1,260 +1,71 @@
 
 # 🌳 Treeton
 
-[GitHub Workflow Status (with branch)](https://img.shields.io/github/actions/workflow/status/scbirlab/treeton/python-test.yml)
-![PyPI - Python Version](https://img.shields.io/pypi/pyversions/treeton)
+![GitHub Actions](https://img.shields.io/github/actions/workflow/status/scbirlab/treeton/python-test.yml)
+![Python versions](https://img.shields.io/pypi/pyversions/treeton)
 ![PyPI](https://img.shields.io/pypi/v/treeton)
 
-**Treeton** is a lightweight framework for reproducible tree-based machine learning, combining declarative model configuration, data featurisation, provenance tracking, training, evaluation and checkpointing.
+**Treeton makes it straightforward to train, evaluate, checkpoint and share machine-learning models.**
 
-Treeton works with estimators implementing the familiar scikit-learn `fit(X, y)` and `predict(X)` interface. It delegates data loading and provenance to [Providence](https://github.com/scbirlab/providence) and feature transformations to [Aspect](https://github.com/scbirlab/aspect).
+It provides a common interface for scikit-learn-compatible estimators, including random forests, XGBoost, LightGBM and CatBoost. Models can be combined into ensembles, trained using reproducible configurations and restored with their feature preprocessing and training-data provenance.
 
-The goal is to make a machine-learning experiment easy to **specify, run, save and reproduce**, whether the input is a local table, molecular fingerprints or other structured scientific data.
+Treeton also supports **prediction diagnostics**, such as ensemble disagreement, tree-based uncertainty and distance from previously observed data.
+
+Use it from Python or the command line, including for experiments running on HPC systems.
+
+Treeton is in alpha development and currently focuses on numeric regression.
 
 ## Features
 
-- **Estimator-agnostic training** — instantiate compatible estimators from a JSON configuration, including scikit-learn tree models.
-- **Composable feature transformations** — use Aspect to generate, concatenate and reuse features.
-- **Dataset provenance** — resolve local and remote datasets using Providence, with source metadata carried into training checkpoints.
-- **Checkpointing** — save fitted models together with pipeline configurations and training-data artefacts.
-- **Batched prediction** — predict over Hugging Face Datasets, with optional CLI row selection.
-- **Model evaluation** — calculate RMSE/RMSD, MAE, Pearson's *r* and Spearman's ρ.
-- **CLI and Python API** — use the same `Box` abstraction interactively or in automated workflows.
+- **Train different models consistently.** Use random forests, XGBoost, LightGBM, CatBoost or other compatible estimators.
+- **Build ensembles.** Combine repeated models or different estimator types, with optional prediction weights.
+- **Save and share checkpoints.** Retain trained models, preprocessing and training-data provenance.
+- **Score predictions.** Estimate ensemble disagreement, tree variation and novelty relative to training observations.
+- **Run reproducible experiments.** Define models and preprocessing in JSON, with command-line overrides.
+- **Work with large datasets.** Use batched prediction and checkpointed datasets.
 
-Treeton is at an early stage of development. Random-forest regression is covered by end-to-end tests; compatibility with other estimators depends on their APIs.
-
-## Contents
-
-- [Installation](#installation)
-- [Quick start](#quick-start)
-- [Command-line interface](#command-line-interface)
-- [Configuration](#configuration)
-- [Python API](#python-api)
-- [Molecular machine learning](#molecular-machine-learning)
-- [Checkpoints and reproducibility](#checkpoints-and-reproducibility)
-- [Development](#development)
-- [Related packages](#related-packages)
+Treeton uses [Aspect](https://github.com/scbirlab/aspect) for data transformations and [Providence](https://github.com/scbirlab/providence) for data loading and provenance.
 
 ## Installation
 
-Treeton requires Python 3.11 or later.
+Python 3.11 or later is required.
 
-### From GitHub
+```bash
+pip install treeton
+```
+
+For the latest development version:
 
 ```bash
 pip install "git+https://github.com/scbirlab/treeton.git@dev"
 ```
 
-For development:
+Install optional model backends or chemistry support as needed:
 
 ```bash
-git clone https://github.com/scbirlab/treeton.git
-cd treeton
-pip install -e ".[dev]"
+pip install "treeton[trees]"  # XGBoost and LightGBM
+pip install "treeton[cat]"    # CatBoost
+pip install "treeton[chem]"   # Molecular fingerprints and descriptors
+pip install "treeton[bio]"    # Biological feature tools
 ```
-
-### Optional dependencies
-
-Additional packages are available for specialised workflows:
-
-```bash
-# Chemical featurisation through Schemist
-pip install -e ".[chem]"
-
-# Biological sequence and taxonomy features through Vectome
-pip install -e ".[bio]"
-
-# XGBoost
-pip install -e ".[xgb]"
-
-# LightGBM
-pip install -e ".[lgbm]"
-```
-
-See `pyproject.toml` for the complete list of optional dependency groups, including CUDA-specific XGBoost options.
 
 ## Quick start
 
-Train a random forest, save it and predict on new observations using a single JSON configuration.
-
 ### 1. Prepare some data
 
-For a self-contained example, create a small CSV training dataset and a prediction dataset:
+Treeton accepts datasets in formats supported by Providence, including CSV and Parquet.
+
+For a small example:
 
 ```bash
 printf 'x,y\n1,3\n2,5\n3,7\n4,9\n5,11\n6,13\n7,15\n8,17\n9,19\n10,21\n' > train.csv
 
-printf 'x\n2.5\n5.5\n8.5\n' > unseen.csv
+printf 'x\n2.5\n5.5\n8.5\n' > candidates.csv
 ```
 
 ### 2. Define an experiment
 
-Save the following as `experiment.json`:
-
-```json
-{
-  "box": {
-    "model": {
-      "class_path": "sklearn.ensemble.RandomForestRegressor",
-      "init_args": {
-        "n_estimators": 100,
-        "random_state": 42
-      }
-    },
-    "pipeline": {
-      "column_transforms": {
-        "log_x": ["x", "log"]
-      }
-    },
-    "features": ["log_x"],
-    "target": "y"
-  }
-}
-```
-
-This configuration specifies:
-
-1. A `RandomForestRegressor` with reproducible initialisation.
-2. An Aspect transform generating `log_x` from `x`.
-3. The feature columns supplied to the estimator.
-4. The prediction target.
-
-Treeton converts the selected feature columns into a numeric matrix before calling the estimator.
-
-### 3. Train
-
-```bash
-treeton train train.csv \
-    --config experiment.json \
-    --checkpoint model.tt
-```
-
-The `model.tt` directory contains the fitted estimator and the information required to reconstruct its preprocessing pipeline.
-
-### 4. Predict
-
-```bash
-treeton predict model.tt \
-    --data unseen.csv \
-    --output predictions.parquet
-```
-
-The output contains the input observations and a prediction column named `prediction:y`.
-
-You can also save the predictions as a Providence dataset checkpoint:
-
-```bash
-treeton predict model.tt \
-    --data unseen.csv \
-    --checkpoint predictions.pv
-```
-
-Both output options can be used together.
-
-## Command-line interface
-
-Treeton provides two primary commands:
-
-```bash
-treeton train --help
-treeton predict --help
-```
-
-### Training
-
-```bash
-treeton train DATA \
-    --config experiment.json \
-    --checkpoint model.tt
-```
-
-`DATA` can be a supported local or remote dataset specification understood by Providence.
-
-Common training options:
-
-| Option | Description |
-| --- | --- |
-| `--config` | JSON experiment configuration |
-| `--checkpoint`, `-c` | Output model checkpoint directory |
-| `--validation`, `-2` | Optional validation dataset |
-| `--pipeline`, `-p` | Override the configured Aspect pipeline with a JSON file |
-| `--set` | Override a configuration value |
-| `--cache` | Directory for dataset and preprocessing caches |
-
-#### Configuration overrides
-
-Use `--set` to override nested configuration values without editing the JSON file:
-
-```bash
-treeton train train.csv \
-    --config experiment.json \
-    --checkpoint model.tt \
-    --set box.model.init_args.n_estimators=500 \
-    --set box.model.init_args.max_depth=12
-```
-
-Overrides use `dotted.path=value` notation. Values are parsed as JSON when possible, so integers, floating-point numbers, booleans, `null` and arrays are supported.
-
-For example:
-
-```bash
---set box.features='["log_x","another_feature"]'
-```
-
-The corresponding feature must exist in the input data or be generated by the selected pipeline.
-
-### Prediction
-
-```bash
-treeton predict MODEL_CHECKPOINT \
-    --data DATA \
-    --output predictions.parquet
-```
-
-Common prediction options:
-
-| Option | Description |
-| --- | --- |
-| `--data`, `-d` | Dataset on which to predict |
-| `--output`, `-o` | Output table, e.g. CSV or Parquet |
-| `--checkpoint`, `-c` | Output Providence dataset checkpoint |
-| `--start` | First row to predict, inclusive |
-| `--stop` | Row at which to stop, exclusive |
-| `--pipeline`, `-p` | Override preprocessing pipeline |
-| `--config` | Optional JSON prediction settings |
-| `--set` | Override prediction settings |
-| `--cache` | Cache directory |
-
-For example, predict a subset of a larger dataset:
-
-```bash
-treeton predict model.tt \
-    --data dataset.parquet \
-    --start 10000 \
-    --stop 20000 \
-    --output predictions-10000-20000.parquet
-```
-
-The selected interval follows Python slicing semantics: `[start:stop]`.
-
-Prediction settings may also be supplied in JSON:
-
-```json
-{
-  "batch_size": 2048
-}
-```
-
-```bash
-treeton predict model.tt \
-    --data unseen.csv \
-    --config predict.json \
-    --output predictions.parquet
-```
-
-## Configuration
-
-The experiment configuration has a small number of top-level sections:
+Create `experiment.json`:
 
 ```json
 {
@@ -267,35 +78,316 @@ The experiment configuration has a small number of top-level sections:
       }
     },
     "pipeline": {},
-    "features": ["feature_1", "feature_2"],
-    "target": "response"
+    "features": ["x"],
+    "target": "y"
   },
-  "fit": {},
-  "save": {}
-}
-```
-
-### `box.model`
-
-The model is specified using a fully qualified Python class path and constructor arguments.
-
-```json
-{
-  "class_path": "sklearn.ensemble.ExtraTreesRegressor",
-  "init_args": {
-    "n_estimators": 200,
-    "random_state": 42
+  "fit": {
+    "skip_eval": true
   }
 }
 ```
 
-This mechanism can instantiate other compatible estimator classes available in the environment. Backend-specific behaviour may require additional integration and testing.
+The configuration defines which model to train, which columns to use and how the data should be prepared.
 
-### `box.pipeline`
+### 3. Train and save
 
-The pipeline is an [Aspect](https://github.com/scbirlab/aspect) configuration describing transformations from source columns to model features.
+```bash
+treeton train train.csv \
+    --config experiment.json \
+    --checkpoint model.tt
+```
 
-For example:
+The checkpoint stores the fitted model alongside its configuration, preprocessing and training-data information.
+
+### 4. Make predictions
+
+```bash
+treeton predict model.tt \
+    --trust-sklearn-trees \
+    --data candidates.csv \
+    --output predictions.csv
+```
+
+The output contains the original data and a `prediction:y` column.
+
+`--trust-sklearn-trees` authorises loading scikit-learn tree objects from a checkpoint you trust.
+
+### 5. Add prediction diagnostics
+
+```bash
+treeton predict model.tt \
+    --trust-sklearn-trees \
+    --data candidates.csv \
+    --score tree_sd inverse_leaf_occupancy euclidean_distance \
+    --output scored.csv
+```
+
+Alongside the predictions, this adds columns such as:
+
+- `score:tree_sd:y`
+- `score:inverse_leaf_occupancy`
+- `score:euclidean_distance`
+
+These help identify predictions made with greater model disagreement or farther from the training observations.
+
+## Prediction scoring
+
+Treeton can calculate multiple uncertainty and novelty diagnostics in the same prediction run.
+
+| Scorer | What it measures |
+| --- | --- |
+| `ensemble_sd` | Disagreement between ensemble members |
+| `tree_sd` | Variation in predictions across individual trees |
+| `inverse_leaf_occupancy` | How sparsely populated the candidate's tree leaves are in the training data |
+| `euclidean_distance` | Distance to the nearest training observation in model feature space |
+| `tanimoto_distance` | Chemical fingerprint distance to the nearest training compound |
+
+Higher values generally indicate greater disagreement or novelty.
+
+These quantities have different scales and interpretations. **They are diagnostics, not automatically calibrated probabilities of error.** Some scorers also require particular model capabilities.
+
+### Python API
+
+```python
+from treeton import Box
+from treeton.scorers import InverseLeafOccupancy
+
+box = Box.from_config({
+    "model": {
+        "class_path": "sklearn.ensemble.RandomForestRegressor",
+        "init_args": {
+            "n_estimators": 200,
+            "random_state": 42
+        }
+    },
+    "features": ["x"],
+    "target": "y",
+    "pipeline": {}
+})
+
+box.fit("train.csv", skip_eval=True)
+
+results = box.predict(
+    "candidates.csv",
+    score=[
+        "tree_sd",
+        "euclidean_distance",
+        InverseLeafOccupancy(
+            normalization="reference_percentile"
+        )
+    ]
+)
+```
+
+Reference-percentile normalisation expresses leaf occupancy relative to the distribution observed in the training data. It can help compare novelty scores from different models.
+
+To assign custom output names, pass a dictionary:
+
+```python
+results = box.predict(
+    "candidates.csv",
+    score={
+        "forest_variation": "tree_sd",
+        "feature_distance": "euclidean_distance",
+        "leaf_percentile": InverseLeafOccupancy(
+            normalization="reference_percentile"
+        )
+    }
+)
+```
+
+The resulting score columns use those names.
+
+### Molecular similarity
+
+Treeton can estimate chemical novelty using the Tanimoto distance between binary molecular fingerprints.
+
+```python
+from treeton.scorers import TanimotoDistance
+
+results = box.predict(
+    "compounds.csv",
+    score=TanimotoDistance(
+        structure_column="smiles",
+        column="fingerprint"
+    )
+)
+```
+
+Existing fingerprints are reused when available. Otherwise, fingerprints can be generated from SMILES using Aspect and Schemist.
+
+The molecular fingerprint need not be one of the model's predictive features.
+
+Install chemistry support with:
+
+```bash
+pip install "treeton[chem]"
+```
+
+Exact nearest-reference similarity is used by default. Large reference libraries can make this calculation expensive.
+
+### Configured scoring from the CLI
+
+For parameterised scorers, create a prediction configuration such as `predict.json`:
+
+```json
+{
+  "batch_size": 128,
+  "score": {
+    "leaf_percentile": {
+      "class_path": "treeton.scorers.leaves.InverseLeafOccupancy",
+      "init_args": {
+        "normalization": "reference_percentile"
+      }
+    },
+    "feature_distance": "euclidean_distance"
+  }
+}
+```
+
+Then run:
+
+```bash
+treeton predict model.tt \
+    --trust-sklearn-trees \
+    --data candidates.csv \
+    --config predict.json \
+    --score tree_sd \
+    --output scored.parquet
+```
+
+Scorers from the configuration and command line are combined. Custom scorer classes can also be instantiated from installed packages using `class_path` and `init_args`.
+
+## Ensembles
+
+Treeton supports ensembles of repeated models and mixtures of different estimator types.
+
+### Repeated models
+
+To train an ensemble of five random forests, use this model configuration inside `experiment.json`:
+
+```json
+{
+  "kind": "ensemble",
+  "base": {
+    "class_path": "sklearn.ensemble.RandomForestRegressor",
+    "init_args": {
+      "n_estimators": 200
+    }
+  },
+  "n_members": 5,
+  "seed": 42
+}
+```
+
+Treeton constructs separately seeded members and averages their predictions.
+
+### Mixed models
+
+Different estimators can also be combined:
+
+```python
+from sklearn.ensemble import RandomForestRegressor
+from xgboost import XGBRegressor
+from treeton import Ensemble
+
+model = Ensemble(
+    {
+        "rf": RandomForestRegressor(
+            n_estimators=200,
+            random_state=42
+        ),
+        "xgb": XGBRegressor(
+            n_estimators=300,
+            random_state=43
+        )
+    },
+    weights=[1, 2]
+)
+
+model.fit(X_train, y_train)
+
+predictions = model.predict(X_test)
+members = model.predict_members(X_test)
+```
+
+The weights determine each member's contribution to the ensemble prediction.
+
+Ensembles currently share one feature representation across their members.
+
+### Inspect individual predictions
+
+Use `--disaggregate` from the CLI:
+
+```bash
+treeton predict ensemble.tt \
+    --trust-sklearn-trees \
+    --data candidates.csv \
+    --score ensemble_sd \
+    --disaggregate \
+    --output predictions.parquet
+```
+
+This produces member-level predictions rather than only the ensemble mean. Scoring remains available independently of the output format.
+
+In Python, use `model.predict_members(X)` or `box.predict(..., disaggregate=True)`.
+
+## Training, evaluation and checkpoints
+
+### Python workflow
+
+```python
+from treeton import Box
+
+box = Box.from_config({
+    "model": {
+        "class_path": "sklearn.ensemble.RandomForestRegressor",
+        "init_args": {"n_estimators": 200}
+    },
+    "features": ["x"],
+    "target": "y",
+    "pipeline": {}
+})
+
+box.fit("train.csv", skip_eval=True)
+box.save("model.tt")
+
+restored = Box.load(
+    "model.tt",
+    trusted_types=("sklearn.tree._tree.Tree",)
+)
+
+predictions = restored.predict("candidates.csv")
+```
+
+You can also evaluate trained models on held-out data:
+
+```python
+predicted, metrics = box.evaluate(
+    "validation.csv",
+    metrics=["rmse", "mae", "pearson", "spearman"]
+)
+```
+
+### Reproducible checkpoints
+
+A `Box` checkpoint retains the fitted model, model configuration, fitted preprocessing and training-data provenance.
+
+Depending on the data source and checkpoint settings, training data may be stored directly or retained by reference.
+
+Reference-based prediction scorers depend on the original training data remaining accessible.
+
+Treeton uses native model formats when supported and skops for scikit-learn estimators. Loading some sklearn checkpoints requires explicitly trusting their internal tree types.
+
+Only load checkpoints from sources you trust. Unsafe joblib serialization is available as an explicit fallback for otherwise unsupported estimators.
+
+## Advanced usage
+
+### Feature transformations
+
+Treeton delegates preprocessing to Aspect.
+
+For example, a pipeline can create a transformed feature:
 
 ```json
 {
@@ -305,260 +397,89 @@ For example:
 }
 ```
 
-The `features` list refers to the logical feature names, including transformed output names.
+The model can then select `"log_x"` in its feature configuration.
 
-A model can use both existing and transformed columns:
+Aspect supports other numerical, categorical, chemical and biological transformations. See the [Aspect documentation](https://github.com/scbirlab/aspect).
 
-```json
-{
-  "features": ["numeric_feature", "log_x"]
-}
-```
+### Configuration overrides
 
-### `box.features` and `box.target`
-
-Features are supplied as an ordered list of column names. Each selected column can contain a scalar or a fixed-length numeric vector; Treeton concatenates them into a numeric feature matrix.
-
-The target may be a single column or a list of columns:
-
-```json
-{
-  "features": ["fingerprint", "descriptors"],
-  "target": ["activity_a", "activity_b"]
-}
-```
-
-Multi-target training requires an estimator that supports multiple outputs.
-
-### `fit` and `save`
-
-The `fit` section passes keyword arguments to `Box.fit()`. The `save` section passes options to the underlying Aspect pipeline checkpoint.
-
-For example:
-
-```json
-{
-  "save": {
-    "save_source_data": true,
-    "save_transformed": false
-  }
-}
-```
-
-Whether the source data are embedded or referenced affects checkpoint size and portability.
-
-## Python API
-
-The core abstraction is `treeton.Box`, which combines an estimator, its feature definitions and an Aspect pipeline.
-
-### Train and predict
-
-```python
-import json
-
-from treeton import Box
-
-with open("experiment.json") as f:
-    experiment = json.load(f)
-
-box = Box.from_config(experiment["box"])
-
-box.fit("train.csv")
-
-predictions = box.predict("unseen.csv")
-print(predictions["prediction:y"])
-```
-
-`predict()` returns a Hugging Face Dataset containing prediction columns alongside the prepared input data.
-
-### Save and restore
-
-```python
-box.save("model.tt")
-
-restored = Box.load("model.tt")
-
-predictions = restored.predict("unseen.csv")
-```
-
-The model and preprocessing pipeline are restored together.
-
-### Use an existing estimator
-
-You can also construct a `Box` directly:
-
-```python
-from sklearn.ensemble import RandomForestRegressor
-from treeton import Box
-
-box = Box(
-    model=RandomForestRegressor(
-        n_estimators=200,
-        random_state=42,
-    ),
-    features=["x"],
-    target="y",
-)
-
-box.fit("train.csv")
-box.save("model.tt")
-```
-
-A model passed directly need only implement compatible `fit()` and `predict()` methods.
-
-### Evaluate a model
-
-```python
-predicted, scores = box.evaluate(
-    "train.csv",
-    metrics=["rmse", "mae", "pearson", "spearman"],
-)
-
-print(scores)
-```
-
-`evaluate()` returns a tuple containing the predicted dataset and a dictionary of metric values.
-
-Available registered regression metrics include:
-
-| Metric | Description |
-| --- | --- |
-| `rmsd`, `rmse` | Root mean square deviation/error |
-| `mae` | Mean absolute error |
-| `pearson` | Pearson correlation coefficient |
-| `spearman` | Spearman rank correlation coefficient |
-
-Evaluation requires the target columns to be present. For meaningful model assessment, use held-out data rather than the training set.
-
-### Verify the training data source
-
-When the original data source is available through Providence, its recorded provenance can be accessed and verified:
-
-```python
-source = box.training_data_source
-
-if source is not None:
-    print(box.verify_training_data_source())
-```
-
-A returned `None` indicates that no verifiable source is available. Source verification does not independently guarantee reproducibility of the entire software environment.
-
-## Molecular machine learning
-
-Treeton is intended to work with scientific feature representations, including molecular fingerprints and descriptors.
-
-For chemical featurisation, install the `chem` optional dependencies and specify Aspect transforms:
-
-```json
-{
-  "box": {
-    "model": {
-      "class_path": "sklearn.ensemble.RandomForestRegressor",
-      "init_args": {
-        "n_estimators": 200,
-        "random_state": 42
-      }
-    },
-    "pipeline": {
-      "column_transforms": {
-        "fp": ["smiles", "morgan-fingerprint"],
-        "descriptors": ["smiles", "descriptors-2d"]
-      }
-    },
-    "features": ["fp", "descriptors"],
-    "target": "activity"
-  }
-}
-```
-
-This example assumes a dataset with `smiles` and `activity` columns. The transforms create feature vectors that Treeton concatenates before fitting the model.
-
-Dataset specifications supported by Providence can also refer to remote resources, including Hugging Face datasets:
+CLI options can override experiment configuration without editing JSON files:
 
 ```bash
-treeton train \
-    'hf://scbirlab/fang-2023-biogen-adme~scaffold-split:train' \
+treeton train train.csv \
     --config experiment.json \
-    --checkpoint model.tt
+    --checkpoint model.tt \
+    --set box.model.init_args.n_estimators=500
 ```
 
-Adjust the feature and target definitions to match the selected dataset.
+Multiple `--set` arguments are supported, including nested ensemble settings.
 
-For dataset splitting, see [Eluent](https://github.com/scbirlab/eluent), which handles split assignments separately from model training.
+### Custom scorers
 
-## Checkpoints and reproducibility
+You can supply your own prediction diagnostic as a callable:
 
-A Treeton model checkpoint is a directory containing the saved estimator, a manifest and its Aspect pipeline checkpoint.
+```python
+def custom_score(context):
+    return context.X[:, 0]
 
-For example:
-
-```text
-model.tt/
-├── config.json
-├── model.joblib
-└── training-data.as/
-    └── ...
+results = box.predict(
+    "candidates.csv",
+    score={"my_score": custom_score}
+)
 ```
 
-`config.json` records the checkpoint schema, experiment configuration and artefact locations.
+Scorers receive a context containing the model, predictions, candidate data and any shared inference resources they request.
 
-`model.joblib` stores the fitted Python estimator. Models exposing a native `save()` method may also generate a native-format artefact, although the current loader restores the joblib representation.
+More advanced scorers can implement preparation hooks to access training data, build reference indices or construct calibration resources once before batched prediction.
 
-`training-data.as/` contains the Aspect pipeline checkpoint, including its configuration and the training-data source information managed by Providence.
-
-The pipeline can preserve references to immutable remote datasets or package local source data, according to its checkpoint options.
-
-### Reproducibility considerations
-
-A checkpoint makes model restoration convenient, but exact reproducibility also depends on:
-
-- The original data and its version or checksum.
-- The preprocessing implementation and dependencies.
-- The fitted model's software versions.
-- Random seeds and numerical execution environment.
-
-For long-term archival, retain the checkpoint alongside a record of the package environment, such as a lock file or container image.
-
-**Security:** joblib uses pickle-based deserialization. Only load model checkpoints from trusted sources.
+This supports integration with third-party uncertainty and novelty methods.
 
 ## Development
 
-Install the development dependencies:
+Clone the repository and install development dependencies:
 
 ```bash
+git clone https://github.com/scbirlab/treeton.git
+cd treeton
 pip install -e ".[dev]"
 ```
 
-Run the unit and integration tests:
+Run the Python tests:
 
 ```bash
-pytest -q test
+pytest -q
+pytest --doctest-modules -q treeton
 ```
 
-Run module doctests:
+Run the end-to-end CLI scorer smoke test:
 
 ```bash
-pytest -q treeton --doctest-modules
+bash test/smoke_scorers.sh
 ```
 
-The GitHub Actions workflows also exercise the command-line interface, including training and prediction on a remote scientific dataset.
+### Project components
 
-To report a bug or propose a feature, open an [issue](https://github.com/scbirlab/treeton/issues).
-
-## Related packages
-
-Treeton is designed to work as part of a modular machine-learning workflow:
-
-| Package | Role |
+| Component | Responsibility |
 | --- | --- |
-| [Providence](https://github.com/scbirlab/providence) | Dataset resolution, provenance and checkpointing |
-| [Eluent](https://github.com/scbirlab/eluent) | Dataset splitting and split provenance |
-| [Aspect](https://github.com/scbirlab/aspect) | Feature transformation and representation |
-| [Treeton](https://github.com/scbirlab/treeton) | Tree-based estimator training and evaluation |
-| [Duvidnn](https://github.com/scbirlab/duvidnn) | Neural-network modelling and uncertainty methods |
+| `Box` | Training, feature selection, prediction and checkpointing |
+| `Ensemble` | Model composition and prediction aggregation |
+| Model adapters | Backend-specific fitting, inference and persistence |
+| Scorers | Uncertainty and novelty diagnostics |
+| Aspect | Feature transformation |
+| Providence | Dataset resolution, provenance and checkpointing |
 
-Each package has a separate responsibility, making it possible to reuse the same data sources, splits and feature representations across different model families.
+The scoring API supports optional preparation, compatibility checks and arbitrary per-invocation state. Model capabilities such as tree predictions and leaf indices are exposed through the adapter layer.
+
+The current implementation focuses on regression and exact reference-distance calculations. Future work may include approximate nearest-neighbour backends, additional uncertainty scorers and evaluation methods incorporating prediction diagnostics.
+
+## Related projects
+
+- [Providence](https://github.com/scbirlab/providence) — Data loading, provenance and checkpointing.
+- [Aspect](https://github.com/scbirlab/aspect) — Feature processing and transformation.
+- [Eluent](https://github.com/scbirlab/eluent) — Dataset grouping and splitting.
+- [Schemist](https://github.com/scbirlab/schemist) — Molecular featurisation.
+- [Vectome](https://github.com/scbirlab/vectome) — Biological feature representations.
 
 ## License
 
-Treeton is distributed under the [MIT License](LICENSE).
+MIT. See [LICENSE](https://github.com/scbirlab/treeton/blob/main/LICENSE).
