@@ -16,6 +16,7 @@ class Requirements:
     outputs: tuple[str, ...] = ("prediction",)
     capabilities: tuple[str, ...] = field(default_factory=tuple)
     reference_features: bool = False
+    reference_indices: tuple[str, ...] = field(default_factory=tuple)
     reference_score_distribution: bool = False
 
 

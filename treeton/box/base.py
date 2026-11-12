@@ -223,10 +223,29 @@ def _validate_score_requirements(
         if (
             requirements.reference_features
             and "leaf_indices" not in requirements.outputs
+            and not requirements.reference_indices
         ):
             raise NotImplementedError(
                 f"Scorer {name!r} requests unsupported "
                 "reference preparation"
+            )
+
+        unsupported_indices = (
+            set(requirements.reference_indices) - {"euclidean"}
+        )
+        if unsupported_indices:
+            raise NotImplementedError(
+                f"Unsupported reference indices: "
+                f"{sorted(unsupported_indices)}"
+            )
+
+        if (
+            requirements.reference_indices
+            and not requirements.reference_features
+        ):
+            raise ValueError(
+                f"Scorer {name!r} requests a reference index "
+                "without reference_features=True"
             )
 
         missing = set(requirements.columns) - available_columns
@@ -1041,6 +1060,77 @@ class Box:
             )
         )
 
+
+    def _prepare_euclidean_reference(
+        self,
+        *,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ):
+        """Build an exact NN index in fitted model-feature space."""
+        import numpy as np
+
+        from ..scorers.distances import EuclideanReference
+
+        data_out = getattr(self.pipeline, "data_out", None)
+
+        if data_out is not None:
+            reference = self._unwrap(data_out)
+            reference_pipeline = self.pipeline
+
+        elif getattr(self.pipeline, "data_in", None) is not None:
+            reference, reference_pipeline = self._pre_predict(
+                data=None,
+            )
+
+        else:
+            raise ValueError(
+                "Reference scoring requires training data "
+                "in the fitted Aspect pipeline"
+            )
+
+        if hasattr(reference, "with_format"):
+            reference = reference.with_format(None)
+
+        if hasattr(reference, "iter"):
+            batches = reference.iter(batch_size=batch_size)
+
+        elif isinstance(reference, Mapping):
+            n_rows = _data_len(reference)
+            batches = (
+                {
+                    name: values[start:start + batch_size]
+                    for name, values in reference.items()
+                }
+                for start in range(0, n_rows, batch_size)
+            )
+
+        else:
+            raise TypeError(
+                "Training reference must be a Dataset "
+                "or mapping of columns"
+            )
+
+        blocks = []
+
+        for batch in batches:
+            if not batch:
+                continue
+
+            (X,) = _matrix(
+                batch,
+                reference_pipeline,
+                (self.features,),
+            )
+
+            blocks.append(np.asarray(X, dtype=np.float64))
+
+        if not blocks:
+            raise ValueError("Training reference dataset is empty")
+
+        return EuclideanReference.build(
+            np.concatenate(blocks, axis=0)
+        )
+
     def predict(
         self,
         data=None,
@@ -1084,29 +1174,43 @@ class Box:
                 prepared,
             )
 
-        resources = None
-
-        if any(
-            getattr(
-                scorer,
-                "requirements",
-                Requirements(),
-            ).reference_features
+        requirements = tuple(
+            getattr(scorer, "requirements", Requirements())
             for scorer in scorers
-        ):
-            resources = {
-                "leaf_reference": self._prepare_leaf_reference(
+        )
+
+        resources = {}
+
+        needs_leaf_reference = any(
+            requirement.reference_features
+            and "leaf_indices" in requirement.outputs
+            for requirement in requirements
+        )
+
+        if needs_leaf_reference:
+            resources["leaf_reference"] = (
+                self._prepare_leaf_reference(
                     batch_size=batch_size,
                     calibrate=any(
                         getattr(
-                            scorer,
-                            "requirements",
-                            Requirements(),
-                        ).reference_score_distribution
-                        for scorer in scorers
+                            requirement,
+                            "reference_score_distribution",
+                            False,
+                        )
+                        for requirement in requirements
                     ),
                 )
-            }
+            )
+
+        if any(
+            "euclidean" in requirement.reference_indices
+            for requirement in requirements
+        ):
+            resources["euclidean_reference"] = (
+                self._prepare_euclidean_reference(
+                    batch_size=batch_size,
+                )
+            )
 
         return prepared.map(
             _predict_map_batch,
