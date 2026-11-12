@@ -1,14 +1,12 @@
 """Checkpointable, reproducible composition of data processing and tree estimator."""
 
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any
 from collections.abc import Callable, Mapping, Iterable
 from copy import deepcopy
-from itertools import product
 from pathlib import Path
 import json
 import os
 
-from carabiner import print_err
 from providence.io import save_json, load_json
 
 if TYPE_CHECKING:
