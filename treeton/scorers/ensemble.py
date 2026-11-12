@@ -96,6 +96,44 @@ class EnsembleSD:
         return np.sqrt(variance)
 
 
+    def finalize(self, result, *, name, box):
+        """Warn when all ensemble-disagreement scores are zero."""
+        import warnings
+        import numpy as np
+
+        columns = [
+            f"score:{name}:{target}"
+            for target in box.target
+        ]
+
+        if len(result) == 0:
+            return
+
+        missing = set(columns) - set(result.column_names)
+        if missing:
+            raise ValueError(
+                f"Missing ensemble SD columns: {sorted(missing)}"
+            )
+
+        for batch in result.select_columns(columns).iter(
+            batch_size=4096
+        ):
+            if any(
+                np.any(np.asarray(batch[column]) != 0)
+                for column in columns
+            ):
+                return
+
+        warnings.warn(
+            f"Scorer {name!r}: ensemble disagreement is zero "
+            "for every candidate. Members may be identical. "
+            "For repeated XGBoost, consider subsample < 1 or "
+            "colsample_bytree < 1 with different random seeds.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
 @register_scorer
 @dataclass(frozen=True)
 class TreeSD:

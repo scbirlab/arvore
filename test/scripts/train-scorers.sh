@@ -97,6 +97,7 @@ echo "[2/5] Training and saving ensemble"
 
 treeton train "$workdir/train.csv" \
     --config "$workdir/experiment.json" \
+    --cache-leaf-reference \
     --checkpoint "$workdir/model.tt"
 
 test -d "$workdir/model.tt" || {

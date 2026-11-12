@@ -171,6 +171,13 @@ class ScoringRunner:
 
         self._prepared = True
 
+    def finalize(self, result):
+        """Run post-prediction checks on completed results."""
+        for name, scorer in self.scorers.items():
+            hook = getattr(scorer, "finalize", None)
+            if callable(hook):
+                hook(result, name=name, box=self.box)
+
     def score(self, context, *, occupied=()):
         """Return named score columns for one candidate batch."""
         if not self._prepared:
