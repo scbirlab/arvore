@@ -2,7 +2,6 @@
 """Minimal fit adapters for sklearn-compatible estimators."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -62,7 +61,6 @@ def _require_validation(
 
 
 @register_adapter(name="skops")
-@dataclass
 class SklearnAdapter:
 
     name = None
@@ -89,35 +87,25 @@ class SklearnAdapter:
             trusted=list(trusted),
         )
 
-    def codec_name(
+    def adapter_name(
         self, 
-        estimator: Estimator, 
-        *, 
+        estimator: Estimator,
+        *,
+        _class=None,
         allow_unsafe: bool = False
     ) -> str:
         """Choose a compatible serialization format."""
-        from sys import modules
-        from .ensemble import Ensemble
 
-        if isinstance(estimator, Ensemble):
-            return "ensemble"
+        if _class is not None and isinstance(_class, type):
+            if isinstance(estimator, _class):
+                return self.name
+
         # The normal sklearn serialization path.
-        elif type(estimator).__module__.startswith("sklearn."):
+        if type(estimator).__module__.startswith("sklearn."):
             return "skops"
-        elif allow_unsafe:
+        
+        if allow_unsafe:
             return "joblib"
-        elif "xgboost" in modules:
-            from xgboost import XGBRegressor
-            if type(estimator) is XGBRegressor:
-                return "xgboost"
-        elif "lightgbm" in modules:
-            from lightgbm import LGBMRegressor
-            if type(estimator) is LGBMRegressor:
-                return "lightgbm"
-        elif "catboost" in modules:
-            from catboost import CatBoostRegressor
-            if type(estimator) is CatBoostRegressor:
-                return "catboost"
         else:
             raise TypeError(
                 f"No supported codec for "
@@ -152,8 +140,15 @@ class SklearnAdapter:
 
 
 @register_adapter(name="xgboost", ext="ubj")
-@dataclass
 class XGBoostAdapter(SklearnAdapter):
+
+    def adapter_name(self, estimator, *, allow_unsafe=False):
+        from xgboost import XGBRegressor
+        return super().adapter_name(
+            estimator, 
+            allow_unsafe=allow_unsafe,
+            _class=XGBRegressor,
+        )
 
     def save(self, model, path, **kwargs):
         model.save_model(str(path))
@@ -224,10 +219,18 @@ class LightGBMPredictor:
 
 
 @register_adapter(name="lightgbm", ext="txt")
-@dataclass
 class LightGBMAdapter(SklearnAdapter):
 
     restored_trainable = False
+
+    def adapter_name(self, estimator, *, allow_unsafe=False):
+        from lightgbm import LGBMRegressor
+        
+        return super().adapter_name(
+            estimator, 
+            allow_unsafe=allow_unsafe,
+            _class=LGBMRegressor,
+        )
 
     def save(self, model, path, **kwargs):
         # Explicitly preserve the trained ensemble, including
@@ -288,8 +291,16 @@ class LightGBMAdapter(SklearnAdapter):
 
 
 @register_adapter(name="catboost", ext="cbm")
-@dataclass
 class CatBoostAdapter(SklearnAdapter):
+
+    def adapter_name(self, estimator, *, allow_unsafe=False):
+        from catboost import CatBoostRegressor
+        
+        return super().adapter_name(
+            estimator, 
+            allow_unsafe=allow_unsafe,
+            _class=CatBoostRegressor,
+        )
 
     def save(self, model, path, **kwargs):
         model.save_model(str(path), format="cbm")
@@ -329,8 +340,10 @@ class CatBoostAdapter(SklearnAdapter):
 
 
 @register_adapter(name="ensemble", ext="json", package="treeton")
-@dataclass
 class EnsembleAdapter(SklearnAdapter):
+
+    def adapter_name(self, estimator, *, allow_unsafe=False):
+        return self.name
 
     def save(self, model, path, *, allow_unsafe=False, **kwargs):
         model.save(path, allow_unsafe=allow_unsafe)
@@ -401,11 +414,15 @@ class JoblibAdapter(SklearnAdapter):
 
     def save(self, model, path, **kwargs):
         import joblib
-        joblib.dump(model, Path(path) / self.filename)
+        joblib.dump(model, path)
 
-    def load(self, path, *, trusted=(), **kwargs):
+    def load(self, path, *, trusted=(), allow_unsafe=False, **kwargs):
+        if not allow_unsafe:
+            raise ValueError(
+                "Joblib checkpoints require allow_unsafe=True"
+            )
         import joblib
-        return joblib.load(path, Path(path) / self.filename)
+        return joblib.load(path)
 
 
 def get_adapter_by_name(name: str):
@@ -421,7 +438,7 @@ def get_adapter_by_name(name: str):
 def get_serialization_adapter(model, *, allow_unsafe=False):
     """Resolve persistence through the estimator's backend."""
     adapter = get_adapter(model)
-    name = adapter.codec_name(
+    name = adapter.adapter_name(
         model,
         allow_unsafe=allow_unsafe,
     )
@@ -445,7 +462,9 @@ def save_model(
     path = path / adapter.filename
     if not skip_save:
         adapter.save(model, path,  **kwargs)
-    if adapter.name == "ensemble":
+    if skip_save:
+        trainable = True
+    elif adapter.name == "ensemble":
         from providence.io import load_json
 
         manifest = load_json(path)
@@ -460,9 +479,9 @@ def save_model(
         "adapter": adapter.name,
         "filename": adapter.filename if not skip_save else None,
         "class_path": _class_path(model),
-        "version": _backend_version(PACKAGES[adapter.name]),
+        "version": _backend_version(adapter.name),
         "sha256": sha256(path.read_bytes()).hexdigest() if not skip_save else None,
-        "trainable": trainable or skip_save,
+        "trainable": trainable,
     }
 
 

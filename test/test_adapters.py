@@ -103,28 +103,52 @@ def test_checksum_rejection(tmp_path, fitted_rf):
         load_model(tmp_path, metadata)
 
 
+
 def test_joblib_requires_explicit_authorisation(
     tmp_path, fitted_rf
 ):
     model, X = fitted_rf
-
-    custom = CustomRegressor().fit(
-        X, model.predict(X)
-    )
+    custom = CustomRegressor().fit(X, model.predict(X))
 
     with pytest.raises(TypeError, match="No supported codec"):
         get_serialization_adapter(custom)
 
-    adapter = get_serialization_adapter(
-        custom, allow_unsafe=True
-    )
-    assert adapter.name == "joblib"
-
-    metadata = adapter.save(
-        custom, 
-        tmp_path, 
+    metadata = save_model(
+        custom,
+        tmp_path,
         allow_unsafe=True,
     )
 
+    assert metadata["adapter"] == "joblib"
+    assert metadata["filename"] == "model.joblib"
+
     with pytest.raises(ValueError, match="allow_unsafe"):
-        adapter.load(tmp_path)
+        load_model(tmp_path, metadata)
+
+    restored = load_model(
+        tmp_path,
+        metadata,
+        allow_unsafe=True,
+    )
+
+    np.testing.assert_allclose(
+        custom.predict(X),
+        restored.predict(X),
+    )
+
+
+
+def test_native_serialization_preferred_over_joblib():
+    xgb = pytest.importorskip("xgboost")
+    lgb = pytest.importorskip("lightgbm")
+
+    for model, expected in (
+        (xgb.XGBRegressor(), "xgboost"),
+        (lgb.LGBMRegressor(), "lightgbm"),
+    ):
+        assert (
+            get_serialization_adapter(
+                model, allow_unsafe=True
+            ).name
+            == expected
+        )
