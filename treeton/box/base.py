@@ -215,10 +215,13 @@ def _validate_score_requirements(
             )
 
         if requirements.reference_columns:
-            raise NotImplementedError(
-                f"Scorer {name!r} requires reference columns; "
-                "column preparation is not implemented yet"
-            )
+            if not callable(
+                getattr(scorer, "prepare_reference", None)
+            ):
+                raise NotImplementedError(
+                    f"Scorer {name!r} requires reference columns "
+                    "but provides no prepare_reference() hook"
+                )
 
         if (
             requirements.reference_features
@@ -231,7 +234,7 @@ def _validate_score_requirements(
             )
 
         unsupported_indices = (
-            set(requirements.reference_indices) - {"euclidean"}
+            set(requirements.reference_indices) - {"euclidean", "tanimoto"}
         )
         if unsupported_indices:
             raise NotImplementedError(
@@ -242,6 +245,7 @@ def _validate_score_requirements(
         if (
             requirements.reference_indices
             and not requirements.reference_features
+            and not requirements.reference_columns
         ):
             raise ValueError(
                 f"Scorer {name!r} requests a reference index "
@@ -1131,6 +1135,29 @@ class Box:
             np.concatenate(blocks, axis=0)
         )
 
+
+    def _training_reference(self):
+        """Return fitted training rows, retaining raw columns."""
+        data_out = getattr(self.pipeline, "data_out", None)
+
+        if data_out is not None:
+            data = self._unwrap(data_out)
+
+        elif getattr(self.pipeline, "data_in", None) is not None:
+            data, _ = self._pre_predict(data=None)
+
+        else:
+            raise ValueError(
+                "Reference scoring requires training data "
+                "in the fitted Aspect pipeline"
+            )
+
+        return (
+            data.with_format(None)
+            if hasattr(data, "with_format")
+            else data
+        )
+
     def predict(
         self,
         data=None,
@@ -1166,6 +1193,14 @@ class Box:
             data=data,
             pipeline=pipeline,
         )
+
+        # Auxiliary candidate preparation is scorer-owned.
+        for scorer in scorers:
+            prepare = getattr(
+                scorer, "prepare_candidates", None
+            )
+            if prepare is not None:
+                prepared = prepare(prepared)
 
         if scorers:
             _validate_score_requirements(
@@ -1209,6 +1244,27 @@ class Box:
             resources["euclidean_reference"] = (
                 self._prepare_euclidean_reference(
                     batch_size=batch_size,
+                )
+            )
+
+        tanimoto = [
+            scorer
+            for scorer, requirement in zip(
+                scorers, requirements
+            )
+            if "tanimoto" in requirement.reference_indices
+        ]
+
+        if tanimoto:
+            if len(tanimoto) != 1:
+                raise ValueError(
+                    "Only one Tanimoto reference configuration "
+                    "is supported per prediction call"
+                )
+
+            resources["tanimoto_reference"] = (
+                tanimoto[0].prepare_reference(
+                    self._training_reference()
                 )
             )
 
