@@ -271,40 +271,50 @@ class TanimotoDistance:
             n_bits=n_bits,
         )
 
+    def reference_specs(self, box):
+        """The query chunk sizes do not affect reference identity."""
+        return ({
+            "type": "tanimoto", "version": 1,
+            "column": self.column,
+            "structure_column": self.structure_column,
+            "fingerprint_transform": self.fingerprint_transform,
+            "encoding": "packbits-little",
+        },)
+
     def prepare(self, box, *, batch_size=1024):
-        """Prepare reference fingerprints, with raw-source fallback."""
+        """Prepare packed training fingerprints once per fitted Box."""
         from .reference import training_data
 
-        data = training_data(box)
-        columns = set(data.column_names)
+        def build():
+            data = training_data(box)
+            columns = set(data.column_names)
 
-        if (
-            self.column not in columns
-            and self.structure_column not in columns
-        ):
-            # Some fitted pipelines discard auxiliary raw
-            # columns. Recover them from the recorded source.
-            source = getattr(
-                box.pipeline, "data_in", None
-            )
-            if source is not None:
-                source = box._unwrap(source)
-                if hasattr(source, "with_format"):
-                    source = source.with_format(None)
+            if (
+                self.column not in columns
+                and self.structure_column not in columns
+            ):
+                # Recover auxiliary raw columns discarded by Aspect.
+                source = getattr(box.pipeline, "data_in", None)
+                if source is not None:
+                    source = box._unwrap(source)
+                    if hasattr(source, "with_format"):
+                        source = source.with_format(None)
+                    source_columns = (
+                        set(source.column_names)
+                        if hasattr(source, "column_names")
+                        else set(source)
+                    )
+                    if (
+                        self.column in source_columns
+                        or self.structure_column in source_columns
+                    ):
+                        data = source
 
-                source_columns = (
-                    set(source.column_names)
-                    if hasattr(source, "column_names")
-                    else set(source)
-                )
+            return self.prepare_reference(data)
 
-                if (
-                    self.column in source_columns
-                    or self.structure_column in source_columns
-                ):
-                    data = source
-
-        return self.prepare_reference(data)
+        return box.references.get_or_build(
+            self.reference_specs(box)[0], build
+        )
 
     def __call__(self, context: ScoreContext) -> NDArray:
         reference = context.state
