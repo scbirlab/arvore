@@ -138,6 +138,49 @@ class SklearnAdapter:
     ):
         return estimator.predict(X, **kwargs)
 
+    def capabilities(self, estimator) -> frozenset[str]:
+        """Advertise supported prediction diagnostics."""
+        from sklearn.ensemble import (
+            ExtraTreesRegressor,
+            RandomForestRegressor,
+        )
+
+        if isinstance(
+            estimator,
+            (RandomForestRegressor, ExtraTreesRegressor),
+        ):
+            return frozenset({"tree_predictions"})
+
+        return frozenset()
+
+    def tree_predictions(self, estimator, X):
+        """Return (samples, trees, targets) predictions."""
+        import numpy as np
+        from sklearn.utils.validation import check_is_fitted
+
+        if "tree_predictions" not in self.capabilities(estimator):
+            raise NotImplementedError(
+                f"Tree predictions are unsupported for "
+                f"{type(estimator).__name__}"
+            )
+
+        check_is_fitted(estimator)
+
+        predictions = []
+
+        for tree in estimator.estimators_:
+            values = np.asarray(
+                tree.predict(X),
+                dtype=float,
+            )
+
+            if values.ndim == 1:
+                values = values[:, None]
+
+            predictions.append(values)
+
+        return np.stack(predictions, axis=1)
+
 
 @register_adapter(name="xgboost", ext="ubj")
 class XGBoostAdapter(SklearnAdapter):

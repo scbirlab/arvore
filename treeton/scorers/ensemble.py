@@ -30,16 +30,19 @@ class EnsembleSD:
         import numpy as np
 
         predictions = context.member_predictions
-        weights = context.member_weights
-        if weights is None:
-            weights = np.ones_like(predictions[-2])
 
-        if predictions is None or weights is None:
+        if predictions is None:
             raise ValueError(
-                "ensemble_sd requires member predictions "
-                "and member weights"
+                "ensemble_sd requires member predictions"
             )
 
+        weights = context.member_weights
+        if weights is None:
+            weights = np.ones(
+                predictions.shape[1],
+                dtype=float,
+            )
+        
         predictions = np.asarray(predictions, dtype=float)
         weights = np.asarray(weights, dtype=float)
 
