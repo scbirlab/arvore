@@ -1,37 +1,49 @@
 
 """Minimal fit adapters for sklearn-compatible estimators."""
 
-from typing import Any, Protocol, TypeAlias
 from collections.abc import Mapping
 from dataclasses import dataclass
+from hashlib import sha256
+import os
+from pathlib import Path
 
+from carabiner.decorators import decorator_with_params
 from numpy.typing import ArrayLike
 
-from ..typing import Estimator
+from ..typing import Estimator, FitAdapter, Validation
 
-Validation: TypeAlias = tuple[ArrayLike, ArrayLike] | None
+ADAPTERS: dict[str, FitAdapter] = {}
+
+PACKAGES: dict[str, str] = {
+}
 
 
-class FitAdapter(Protocol):
-    def fit(
-        self,
-        estimator: Estimator,
-        X: ArrayLike,
-        y: ArrayLike,
-        *,
-        validation: Validation | None = None,
-        fit_kwargs: Mapping[str, ...] | None = None,
-        early_stopping_rounds: int | None = None
-    ) -> None:
-        ...
+def _class_path(obj):
+    cls = type(obj)
+    return f"{cls.__module__}.{cls.__qualname__}"
 
-    def predict(
-        self, 
-        estimator: Estimator, 
-        X: ArrayLike,
-        **kwargs
-    ) -> ArrayLike:
-        ...
+
+def _backend_version(adapter_name: str) -> str:
+    """Return the version of the installed codec backend."""
+    from importlib import import_module
+
+    module_name = PACKAGES[adapter_name]
+    module = import_module(module_name)
+    return module.__version__
+
+
+@decorator_with_params
+def register_adapter(
+    fn: FitAdapter, 
+    name: str, 
+    ext: str | None = None,
+    package: str | None = None
+) -> FitAdapter:
+    fn.name = name
+    fn.filename = f"model.{ext or name}"
+    ADAPTERS[name] = fn() if isinstance(fn, type) else fn
+    PACKAGES[name] = package or name
+    return fn
 
 
 def _kwargs(fit_kwargs: Mapping[str, ...] | None):
@@ -49,8 +61,70 @@ def _require_validation(
             raise ValueError("Early stopping requires a training validation set")
 
 
+@register_adapter(name="skops")
 @dataclass
 class SklearnAdapter:
+
+    name = None
+    filename = None
+    restored_trainable: bool = True
+
+    def save(self, model, path, **kwargs):
+        import skops.io as sio
+        sio.dump(model, path)
+
+    def load(self, path, *, trusted=(), **kwargs):
+        import skops.io as sio
+
+        unknown = sio.get_untrusted_types(file=path)
+        disallowed = set(unknown) - set(trusted)
+        if disallowed:
+            raise ValueError(
+                "Untrusted model types in skops checkpoint: "
+                f"{sorted(disallowed)}. Review these types "
+                "before explicitly trusting them."
+            )
+        return sio.load(
+            path, 
+            trusted=list(trusted),
+        )
+
+    def codec_name(
+        self, 
+        estimator: Estimator, 
+        *, 
+        allow_unsafe: bool = False
+    ) -> str:
+        """Choose a compatible serialization format."""
+        from sys import modules
+        from .ensemble import Ensemble
+
+        if isinstance(estimator, Ensemble):
+            return "ensemble"
+        # The normal sklearn serialization path.
+        elif type(estimator).__module__.startswith("sklearn."):
+            return "skops"
+        elif allow_unsafe:
+            return "joblib"
+        elif "xgboost" in modules:
+            from xgboost import XGBRegressor
+            if type(estimator) is XGBRegressor:
+                return "xgboost"
+        elif "lightgbm" in modules:
+            from lightgbm import LGBMRegressor
+            if type(estimator) is LGBMRegressor:
+                return "lightgbm"
+        elif "catboost" in modules:
+            from catboost import CatBoostRegressor
+            if type(estimator) is CatBoostRegressor:
+                return "catboost"
+        else:
+            raise TypeError(
+                f"No supported codec for "
+                f"{_class_path(estimator)}. "
+                "Use allow_unsafe=True to enable arbitrary binary serialization."
+            )
+
     def fit(
         self, 
         estimator: Estimator, 
@@ -77,8 +151,20 @@ class SklearnAdapter:
         return estimator.predict(X, **kwargs)
 
 
+@register_adapter(name="xgboost", ext="ubj")
 @dataclass
 class XGBoostAdapter(SklearnAdapter):
+
+    def save(self, model, path, **kwargs):
+        model.save_model(str(path))
+
+    def load(self, path, *, trusted=(), **kwargs):
+        from xgboost import XGBRegressor
+
+        model = XGBRegressor()
+        model.load_model(str(path))
+        return model
+
     def fit(
         self, 
         estimator: Estimator, 
@@ -121,8 +207,39 @@ class XGBoostAdapter(SklearnAdapter):
         estimator.fit(X, y, **kw)
 
 
+class LightGBMPredictor:
+    """Inference-only wrapper preserving the Box prediction API."""
+
+    def __init__(self, booster):
+        self.booster = booster
+
+    def predict(self, X):
+        return self.booster.predict(X)
+
+    def fit(self, X, y, **kwargs):
+        raise RuntimeError(
+            "Native LightGBM checkpoints are inference-only. "
+            "Create a new estimator to retrain."
+        )
+
+
+@register_adapter(name="lightgbm", ext="txt")
 @dataclass
 class LightGBMAdapter(SklearnAdapter):
+
+    restored_trainable = False
+
+    def save(self, model, path, **kwargs):
+        # Explicitly preserve the trained ensemble, including
+        # its best-iteration prediction behaviour.
+        model.booster_.save_model(str(path))
+
+    def load(self, path, *, trusted=(), **kwargs):
+        import lightgbm as lgb
+
+        booster = lgb.Booster(model_file=str(path))
+        return LightGBMPredictor(booster)
+
     def fit(
         self, 
         estimator: Estimator, 
@@ -170,8 +287,20 @@ class LightGBMAdapter(SklearnAdapter):
         estimator.fit(X, y, **kw)
 
 
+@register_adapter(name="catboost", ext="cbm")
 @dataclass
 class CatBoostAdapter(SklearnAdapter):
+
+    def save(self, model, path, **kwargs):
+        model.save_model(str(path), format="cbm")
+
+    def load(self, path, *, trusted=(), **kwargs):
+        from catboost import CatBoostRegressor
+
+        model = CatBoostRegressor()
+        model.load_model(str(path), format="cbm")
+        return model
+
     def fit(
         self, 
         estimator: Estimator, 
@@ -199,9 +328,23 @@ class CatBoostAdapter(SklearnAdapter):
         estimator.fit(X, y, **kw)
 
 
+@register_adapter(name="ensemble", ext="json", package="treeton")
 @dataclass
 class EnsembleAdapter(SklearnAdapter):
-    """Delegate fitting and prediction to member adapters."""
+
+    def save(self, model, path, *, allow_unsafe=False, **kwargs):
+        model.save(path, allow_unsafe=allow_unsafe)
+
+    def load(
+        self, path, *, trusted=(), allow_unsafe=False, **kwargs
+    ):
+        from .ensemble import Ensemble
+
+        return Ensemble.load(
+            path,
+            trusted=trusted,
+            allow_unsafe=allow_unsafe,
+        )
 
     def fit(
         self,
@@ -225,8 +368,6 @@ class EnsembleAdapter(SklearnAdapter):
             )
 
     
-
-
 def get_adapter(estimator: Estimator) -> FitAdapter:
     """Select a backend using the estimator's type.
     """
@@ -252,3 +393,119 @@ def get_adapter(estimator: Estimator) -> FitAdapter:
             return CatBoostAdapter()
 
     return SklearnAdapter()
+
+
+@register_adapter(name="joblib", ext="joblib")
+class JoblibAdapter(SklearnAdapter):
+    """Explicitly unsafe whole-object persistence."""
+
+    def save(self, model, path, **kwargs):
+        import joblib
+        joblib.dump(model, Path(path) / self.filename)
+
+    def load(self, path, *, trusted=(), **kwargs):
+        import joblib
+        return joblib.load(path, Path(path) / self.filename)
+
+
+def get_adapter_by_name(name: str):
+    """Resolve a saved backend identifier."""
+    try:
+        return ADAPTERS[name]
+    except KeyError as error:
+        raise ValueError(
+            f"Unknown model codec: {name}"
+        ) from error
+
+
+def get_serialization_adapter(model, *, allow_unsafe=False):
+    """Resolve persistence through the estimator's backend."""
+    adapter = get_adapter(model)
+    name = adapter.codec_name(
+        model,
+        allow_unsafe=allow_unsafe,
+    )
+    return get_adapter_by_name(name)
+
+
+def save_model(
+    model, 
+    path: str | os.PathLike, 
+    *,
+    skip_save: bool = False,
+    **kwargs
+):
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+    adapter = get_serialization_adapter(
+        model,
+        allow_unsafe=kwargs.get("allow_unsafe", False),
+    )
+    path = path / adapter.filename
+    if not skip_save:
+        adapter.save(model, path,  **kwargs)
+    if adapter.name == "ensemble":
+        from providence.io import load_json
+
+        manifest = load_json(path)
+        trainable = all(
+            entry["metadata"]["trainable"]
+            for entry in manifest["members"]
+        )
+    else:
+        trainable = adapter.restored_trainable
+
+    return {
+        "adapter": adapter.name,
+        "filename": adapter.filename if not skip_save else None,
+        "class_path": _class_path(model),
+        "version": _backend_version(PACKAGES[adapter.name]),
+        "sha256": sha256(path.read_bytes()).hexdigest() if not skip_save else None,
+        "trainable": trainable or skip_save,
+    }
+
+
+def load_model(
+    path: str | os.PathLike,
+    metadata,
+    *,
+    allow_unsafe: bool = False,
+    trusted_types=(),
+    **kwargs
+):
+    path = Path(path)
+    name = metadata["adapter"]
+
+    if name not in ADAPTERS:
+        raise ValueError(f"Unknown model adapter: {name}")
+
+    if name == "joblib" and not allow_unsafe:
+        raise ValueError(
+            "Joblib checkpoints require allow_unsafe=True"
+        )
+
+    adapter = get_adapter_by_name(name)
+    filename = metadata["filename"]
+    if filename is None:
+        if metadata["sha256"] is None:
+            raise ValueError(f"Cannot load from checkpoint where mdoel svaing was skipped")
+        else:
+            raise FileNotFoundError(f"Checksum exists but filename is missing")
+    if filename != adapter.filename:
+        raise ValueError(
+            f"Unexpected filename for adapter {name}: {filename}"
+        )
+
+    path = path / filename
+    digest = sha256(path.read_bytes()).hexdigest()
+
+    if digest != metadata["sha256"]:
+        raise ValueError("Model checkpoint checksum mismatch")
+
+    return adapter.load(
+        path, 
+        trusted=tuple(trusted_types),
+        allow_unsafe=allow_unsafe,
+        **kwargs
+    )

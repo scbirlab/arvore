@@ -9,7 +9,7 @@ from sklearn.ensemble import (
 )
 
 from treeton import Box, Ensemble
-from treeton.models.codecs import save_model, load_model
+from treeton.models.adapters import save_model, load_model
 from treeton.models.ensemble import Ensemble
 
 TRUSTED_SKLEARN_TYPES = ("sklearn.tree._tree.Tree",)
@@ -83,7 +83,7 @@ def test_ensemble_codec_roundtrip(tmp_path, regression_data):
 
     metadata = save_model(model, tmp_path)
 
-    assert metadata["codec"] == "ensemble"
+    assert metadata["adapter"] == "ensemble"
     assert (tmp_path / "model.json").exists()
     assert (
         tmp_path / "members" / "0000" / "model.skops"
@@ -201,7 +201,7 @@ def test_mixed_backend_codec(tmp_path, regression_data):
     )
 
     assert [
-        member["metadata"]["codec"]
+        member["metadata"]["adapter"]
         for member in manifest["members"]
     ] == ["skops", "xgboost"]
 

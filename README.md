@@ -167,7 +167,6 @@ To train five independently seeded random forests, replace the `box.model` secti
 ```json
 {
   "kind": "ensemble",
-  "schema_version": 1,
   "base": {
     "class_path": "sklearn.ensemble.RandomForestRegressor",
     "init_args": {
