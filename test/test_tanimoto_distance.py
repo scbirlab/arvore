@@ -240,7 +240,7 @@ def test_fingerprint_generation_hook(monkeypatch):
         "smiles": ["CC", "NO", "NN"],
     })
 
-    prepared = scorer.prepare_candidates(candidates)
+    prepared = scorer.prepare_candidates(candidates, box=None)
     index = scorer.prepare_reference(reference)
 
     expected = brute_force_distance(
@@ -265,4 +265,4 @@ def test_missing_fingerprint_and_structure():
     })
 
     with pytest.raises(ValueError, match="requires fingerprint"):
-        scorer.prepare_candidates(data)
+        scorer.prepare_candidates(data, box=None)

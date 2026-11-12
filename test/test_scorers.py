@@ -75,7 +75,7 @@ def test_ensemble_sd_requires_multiple_members():
 
 
 def test_scorer_resolution():
-    scorer, = resolve_scorers("ensemble_sd")
+    scorer = resolve_scorers("ensemble_sd")["ensemble_sd"]
 
     assert isinstance(scorer, EnsembleSD)
     assert scorer.requirements == Requirements(
@@ -90,7 +90,7 @@ def test_custom_callable():
 
     resolved = resolve_scorers(constant_score)
 
-    assert resolved == (constant_score,)
+    assert resolved == {"constant_score": constant_score}
 
 
 def test_duplicate_names():

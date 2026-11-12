@@ -100,7 +100,7 @@ def test_euclidean_box_scoring(example):
 def test_training_rows_have_zero_distance(example):
     box, X_train, _, _ = example
 
-    index = box._prepare_euclidean_reference(batch_size=7)
+    index = EuclideanDistance().prepare(box, batch_size=7)
 
     np.testing.assert_allclose(
         index.distance(X_train),

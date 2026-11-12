@@ -49,8 +49,8 @@ def test_normalization_configuration():
         normalization="reference_percentile"
     )
 
-    assert not raw.requirements.reference_score_distribution
-    assert percentile.requirements.reference_score_distribution
+    assert raw.normalization == "raw"
+    assert percentile.normalization == "reference_percentile"
 
     with pytest.raises(ValueError, match="Unknown normalization"):
         InverseLeafOccupancy(normalization="invalid")
