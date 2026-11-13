@@ -308,7 +308,7 @@ def _binary(y_true, y_pred, *, threshold, quantile, lower):
     """Return (labels, scores, cutoff), with positives as the high class."""
     y_pred, y_true = _normalize_dims(y_pred, y_true, broadcast=True)
     cutoff = _cutoff(y_true, threshold=threshold, quantile=quantile)
-    if not lower:
+    if lower:
         # Flip so that "lower is positive" becomes "higher is positive".
         y_true, y_pred, cutoff = -y_true, -y_pred, -cutoff
     return y_true >= cutoff, y_pred, cutoff
