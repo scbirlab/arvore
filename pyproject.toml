@@ -57,7 +57,7 @@ trees = ["arvore[xgb,lgbm]"]
 dev = ["arvore[chem,bio,trees]", "pytest>=7.4", "flake8"]
 
 [project.urls]
-"Homepage" = https://github.com/scbirlab/arvore"
+"Homepage" = "https://github.com/scbirlab/arvore"
 "Bug Tracker" = "https://github.com/scbirlab/arvore/issues"
 
 [project.scripts] 
