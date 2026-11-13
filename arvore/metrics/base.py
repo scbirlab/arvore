@@ -80,28 +80,28 @@ def register_metric(fn, name):
     return fn
 
 @register_metric(name="rmsd")
-def rmsd(y_pred, y_true):
+def rmsd(y_true, y_pred):
     """Root mean square error/deviation.
 
     Parameters
     ==========
-    x : numpy.ndarray
+    y_true : numpy.ndarray
+        Ground truth values.
+    y_pred : numpy.ndarray
         Predicted values. If predictions are provided as an ensemble, the mean
         across the last axis is used.
-    y : numpy.ndarray
-        Ground truth values.
 
     Returns
     =======
     float
-        The RMSE between ``x`` and ``y``.
+        The RMSE between ``y_true`` and ``y_pred``.
     
     Examples
     ========
     >>> import numpy as np
     >>> pred = np.array([1.0, 2.0, 3.0])
     >>> truth = np.array([1.0, 2.0, 4.0])
-    >>> np.allclose(rmse(pred, truth), np.sqrt(((pred - truth) ** 2).mean()))
+    >>> np.allclose(rmse(truth, pred), np.sqrt(((pred - truth) ** 2).mean()))
     True
 
     """
@@ -113,21 +113,21 @@ def rmsd(y_pred, y_true):
 rmse = register_metric(rmsd, name="rmse")
 
 @register_metric(name="mae")
-def mae(y_pred, y_true):
+def mae(y_true, y_pred):
     import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true)
     return np.mean(np.abs(y_pred - y_true))
 
 
 @register_metric(name="pearson")
-def pearson_r(y_pred, y_true):
+def pearson_r(y_true, y_pred):
     import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true, broadcast=True)
     return  np.corrcoef(y_pred, y_true)[0, 1]
 
 
 @register_metric(name="spearman")
-def spearman_r(y_pred, y_true):
+def spearman_r(y_true, y_pred):
     from scipy.stats import spearmanr
     y_pred, y_true = _normalize_dims(y_pred, y_true, broadcast=True)
     return spearmanr(

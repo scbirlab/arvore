@@ -869,7 +869,7 @@ class Box:
             y_true = y_true[:, 0]
 
         scores = {
-            name: fn(y_pred, y_true)
+            name: fn(y_true, y_pred)
             for name, fn in metric_fns.items()
         }
 
