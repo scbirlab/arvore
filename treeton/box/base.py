@@ -451,11 +451,15 @@ class Box:
         )
 
         scorers = resolve_scorers(score)
-        if scorers:
-            ScoringRunner(self, scorers).prepare(batch_size=DEFAULT_BATCH_SIZE)
+
+        with self.references.track() as requested:
+            if scorers:
+                ScoringRunner(
+                    self, scorers
+                ).prepare(batch_size=DEFAULT_BATCH_SIZE)
 
         snapshot = self.references.snapshot()
-        validate_requested(self, scorers, snapshot)
+        validate_requested(requested, snapshot)
 
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)

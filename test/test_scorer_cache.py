@@ -416,3 +416,36 @@ def test_reference_cache_retains_specification():
         spec,
         lambda: pytest.fail("Unexpected rebuild"),
     ) is value
+
+
+def test_save_tracks_actual_reference_requests(fitted_box, tmp_path):
+    """A scorer need not separately declare its reference keys."""
+    from treeton.scorers.distances import EuclideanDistance
+
+    box, data = fitted_box
+
+    class CustomDistance:
+        name = "custom_distance"
+
+        def prepare(self, box, *, batch_size):
+            return EuclideanDistance().prepare(
+                box, batch_size=batch_size
+            )
+
+        def __call__(self, context):
+            return context.state.distance(context.X)
+
+    path = tmp_path / "tracked.tt"
+
+    # First request prepares the resource.
+    box.save(path, score=CustomDistance())
+    assert len(box.references.snapshot()) == 1
+
+    # Repeated preparation must also track cache hits.
+    box.save(path, score=CustomDistance())
+
+    restored = _load(path)
+    assert len(restored.references.snapshot()) == 1
+
+    result = _predict(restored, data, "euclidean_distance")
+    assert "score:euclidean_distance" in result.column_names

@@ -72,6 +72,80 @@ class TanimotoReference:
         return cls(packed, counts, n_bits)
 
     
+    def state_dict(self):
+        """Persist packed fingerprints and population counts."""
+        return {
+            "packed": np.asarray(
+                self.packed, 
+                dtype=np.uint8,
+            ),
+            "counts": np.asarray(
+                self.counts, 
+                dtype=np.int32,
+            ),
+            "n_bits": np.array(
+                self.n_bits, 
+                dtype=np.int64,
+            ),
+        }
+
+    @classmethod
+    def from_state_dict(cls, state, spec):
+        n_bits_array = np.asarray(state["n_bits"])
+
+        if (
+            n_bits_array.shape != ()
+            or not np.issubdtype(
+                n_bits_array.dtype, 
+                np.integer
+            )
+        ):
+            raise ValueError("Invalid fingerprint width")
+
+        n_bits = int(n_bits_array)
+
+        packed = np.asarray(state["packed"])
+        counts = np.asarray(state["counts"])
+
+        if (
+            packed.ndim != 2
+            or len(packed) < 1
+            or packed.dtype != np.uint8
+            or counts.ndim != 1
+            or len(counts) != len(packed)
+            or not np.issubdtype(
+                counts.dtype, np.integer
+            )
+            or n_bits < 1
+            or packed.shape[1] != (n_bits + 7) // 8
+            or np.any(
+                counts != np.bitwise_count(packed).sum(
+                    axis=1, dtype=np.int32
+                )
+            )
+        ):
+            raise ValueError(
+                "Invalid Tanimoto reference archive"
+            )
+
+        if n_bits % 8:
+            padding_mask = 255 ^ (
+                (1 << (n_bits % 8)) - 1
+            )
+            if np.any(packed[:, -1] & padding_mask):
+                raise ValueError(
+                    "Nonzero fingerprint padding bits"
+                )
+
+        return cls(
+            packed=packed.copy(),
+            counts=counts.astype(
+                np.int32, 
+                copy=True,
+            ),
+            n_bits=n_bits,
+        )
+
     def distance(
         self,
         fingerprints,
@@ -287,17 +361,6 @@ class TanimotoDistance:
             n_bits=n_bits,
         )
 
-    def reference_specs(self, box):
-        """The query chunk sizes do not affect reference identity."""
-        return ({
-            "type": "tanimoto", 
-            "version": self.version,
-            "column": self.column,
-            "structure_column": self.structure_column,
-            "fingerprint_transform": self.fingerprint_transform,
-            "encoding": "packbits-little",
-        },)
-
     def prepare(self, box, *, batch_size=1024):
         """Prepare packed training fingerprints once per fitted Box."""
 
@@ -327,7 +390,14 @@ class TanimotoDistance:
             return self.prepare_reference(data)
 
         return box.references.get_or_build(
-            self.reference_specs(box)[0], 
+            {
+                "type": "tanimoto",
+                "version": self.version,
+                "column": self.column,
+                "structure_column": self.structure_column,
+                "fingerprint_transform": self.fingerprint_transform,
+                "encoding": "packbits-little",
+            }, 
             build,
         )
 

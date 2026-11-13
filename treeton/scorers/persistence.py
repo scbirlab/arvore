@@ -15,9 +15,6 @@ from .references import canonical_spec, reference_key
 
 
 FORMAT_VERSION: int = 1
-CODEC_TYPES = frozenset({
-    "leaf_counts", "leaf_percentile", "euclidean", "tanimoto",
-})
 
 
 def _sha256(path):
@@ -56,166 +53,108 @@ def fitted_state_digest(checkpoint, config):
     return digest.hexdigest()
 
 
-def _encode_leaf(value, calibrated):
-    from .leaves import LeafReference
 
-    if not isinstance(value, tuple) or not value:
-        raise ValueError("Leaf reference must be a nonempty tuple")
-    arrays = {"n_members": np.array(len(value), dtype=np.int64)}
-    for i, ref in enumerate(value):
-        if not isinstance(ref, LeafReference) or not ref.ids:
-            raise ValueError("Invalid leaf reference")
-        lengths = [len(ids) for ids in ref.ids]
-        offsets = np.empty(len(lengths) + 1, dtype=np.int64)
-        offsets[0] = 0
-        offsets[1:] = np.cumsum(lengths)
-        arrays[f"offsets_{i}"] = offsets
-        arrays[f"ids_{i}"] = np.concatenate(ref.ids).astype(np.int64)
-        arrays[f"counts_{i}"] = np.concatenate(ref.counts).astype(np.int64)
-        arrays[f"n_reference_{i}"] = np.array(ref.n_reference, dtype=np.int64)
-        if calibrated:
-            if ref.calibration_scores is None:
-                raise ValueError("Missing leaf calibration scores")
-            arrays[f"calibration_{i}"] = np.asarray(
-                ref.calibration_scores, dtype=np.float64
-            )
-        elif ref.calibration_scores is not None:
-            raise ValueError("Raw leaf-count reference contains calibration")
-    return arrays
+def reference_types():
+    """Registry of supported safe reference formats."""
+    from .leaves import LeafReferences
+    from .distances import EuclideanReference
+    from .tanimoto import TanimotoReference
+
+    return {
+        "leaf_counts": LeafReferences,
+        "leaf_percentile": LeafReferences,
+        "euclidean": EuclideanReference,
+        "tanimoto": TanimotoReference,
+    }
 
 
-def _decode_leaf(archive, calibrated):
-    from .leaves import LeafReference
+def validate_requested(requested, entries):
+    """Explicitly requested references must be persistable."""
+    types = reference_types()
 
-    n_members = int(archive["n_members"])
-    if n_members < 1:
-        raise ValueError("Invalid leaf reference member count")
-    references = []
-    for i in range(n_members):
-        offsets = np.asarray(archive[f"offsets_{i}"])
-        ids = np.asarray(archive[f"ids_{i}"])
-        counts = np.asarray(archive[f"counts_{i}"])
-        n_reference = int(archive[f"n_reference_{i}"])
-        if (
-            offsets.ndim != 1 or not np.issubdtype(offsets.dtype, np.integer)
-            or len(offsets) < 2 or offsets[0] != 0
-            or np.any(np.diff(offsets) <= 0)
-            or ids.ndim != 1 or counts.ndim != 1
-            or not np.issubdtype(ids.dtype, np.integer)
-            or not np.issubdtype(counts.dtype, np.integer)
-            or int(offsets[-1]) != len(ids) or len(ids) != len(counts)
-            or n_reference < 1
-        ):
-            raise ValueError("Invalid saved leaf-reference arrays")
-        tree_ids = tuple(
-            np.asarray(ids[a:b], dtype=np.int64).copy()
-            for a, b in zip(offsets[:-1], offsets[1:])
-        )
-        tree_counts = tuple(
-            np.asarray(counts[a:b], dtype=np.int64).copy()
-            for a, b in zip(offsets[:-1], offsets[1:])
-        )
-        for one_ids, one_counts in zip(tree_ids, tree_counts):
-            if (
-                np.any(np.diff(one_ids) <= 0)
-                or np.any(one_counts <= 0)
-                or int(one_counts.sum()) != n_reference
-            ):
-                raise ValueError("Invalid saved leaf occupancy counts")
-        ref = LeafReference(tree_ids, tree_counts, n_reference)
-        if calibrated:
-            scores = np.asarray(archive[f"calibration_{i}"], dtype=float)
-            if scores.shape != (n_reference,) or not np.all(np.isfinite(scores)):
-                raise ValueError("Invalid saved leaf calibration")
-            if np.any(np.diff(scores) < 0):
-                raise ValueError("Leaf calibration scores must be sorted")
-            ref = ref.with_calibration(scores)
-        references.append(ref)
-    return tuple(references)
-
-
-def _encode(resource_type, value):
-    if resource_type in {"leaf_counts", "leaf_percentile"}:
-        return _encode_leaf(value, resource_type == "leaf_percentile")
-    if resource_type == "euclidean":
-        from .distances import EuclideanReference
-        if not isinstance(value, EuclideanReference):
-            raise TypeError("Expected EuclideanReference")
-        return {"features": np.asarray(value.features, dtype=np.float64)}
-    if resource_type == "tanimoto":
-        from .tanimoto import TanimotoReference
-        if not isinstance(value, TanimotoReference):
-            raise TypeError("Expected TanimotoReference")
-        return {
-            "packed": np.asarray(value.packed, dtype=np.uint8),
-            "counts": np.asarray(value.counts, dtype=np.int32),
-            "n_bits": np.array(value.n_bits, dtype=np.int64),
-        }
-    raise ValueError(f"No safe reference codec for {resource_type!r}")
-
-
-def _decode(resource_type, archive):
-    if resource_type in {"leaf_counts", "leaf_percentile"}:
-        return _decode_leaf(archive, resource_type == "leaf_percentile")
-
-    if resource_type == "euclidean":
-        from .distances import EuclideanReference
-        features = np.asarray(archive["features"])
-        if features.dtype != np.float64:
-            raise ValueError("Expected float64 Euclidean features")
-        return EuclideanReference.build(features)
-
-    if resource_type == "tanimoto":
-        from .tanimoto import TanimotoReference
-        packed = np.asarray(archive["packed"])
-        counts = np.asarray(archive["counts"])
-        n_bits = int(archive["n_bits"])
-        if (
-            packed.ndim != 2 or len(packed) < 1
-            or packed.dtype != np.uint8
-            or counts.ndim != 1 or len(counts) != len(packed)
-            or not np.issubdtype(counts.dtype, np.integer)
-            or n_bits < 1 or packed.shape[1] != (n_bits + 7) // 8
-            or np.any(
-                counts != np.bitwise_count(packed).sum(
-                    axis=1,
-                    dtype=np.int32,
-                )
+    for key in requested:
+        if key not in entries:
+            raise ValueError(
+                f"Requested reference {key} is missing"
             )
 
+        spec, value = entries[key]
+        kind = spec["type"]
+        cls = types.get(kind)
+
+        if (
+            cls is None
+            or spec.get("version") != FORMAT_VERSION
+            or not isinstance(value, cls)
         ):
-            raise ValueError("Invalid Tanimoto reference archive")
-        if n_bits % 8:
-            padding_mask = 255 ^ ((1 << (n_bits % 8)) - 1)
-            if np.any(packed[:, -1] & padding_mask):
-                raise ValueError("Nonzero fingerprint padding bits")
-        return TanimotoReference(
-            packed.copy(), counts.astype(np.int32, copy=True), n_bits
-        )
-    raise ValueError(f"Unsupported reference type: {resource_type!r}")
+            raise ValueError(
+                f"Requested reference {kind!r} has no "
+                "safe persistence codec"
+            )
 
 
 def save_references(checkpoint, entries, state_digest):
-    """Write all supported prepared resources; return manifest metadata."""
+    """Persist supported reference state dictionaries."""
+    types = reference_types()
     stored = []
-    for key, entry in sorted(entries.items()):
-        spec, value = entry
+
+    for key, (spec, value) in sorted(entries.items()):
         spec = canonical_spec(spec)
+
         if reference_key(spec) != key:
-            raise ValueError("Reference cache key does not match specification")
+            raise ValueError(
+                "Reference cache key does not match specification"
+            )
 
         kind = spec["type"]
-        if kind not in CODEC_TYPES:
-            continue  # Optional in-memory-only reference.
+        cls = types.get(kind)
+
+        # In-memory-only references may remain uncached on disk.
+        # Explicit save requests are checked separately.
+        if cls is None:
+            continue
 
         if spec.get("version") != FORMAT_VERSION:
-            raise ValueError(f"Unsupported {kind!r} reference spec version")
+            raise ValueError(
+                "Unsupported reference specification version"
+            )
+
+        if not isinstance(value, cls):
+            raise TypeError(
+                f"Reference {kind!r} should be {cls.__name__}"
+            )
+
+        state = value.state_dict()
+
+        if not isinstance(state, dict) or not all(
+            isinstance(name, str)
+            for name in state
+        ):
+            raise TypeError(
+                "Reference state must be a string-keyed dict"
+            )
+
+        arrays = {
+            name: np.asarray(array)
+            for name, array in state.items()
+        }
+
+        if any(
+            array.dtype.hasobject
+            for array in arrays.values()
+        ):
+            raise TypeError(
+                "Object arrays cannot be checkpointed safely"
+            )
 
         directory = Path(checkpoint) / "references"
         directory.mkdir(exist_ok=True)
+
         filename = f"{key}.npz"
         file = directory / filename
-        np.savez_compressed(file, **_encode(kind, value))
+
+        np.savez_compressed(file, **arrays)
+
         stored.append({
             "key": key,
             "spec": spec,
@@ -223,8 +162,10 @@ def save_references(checkpoint, entries, state_digest):
             "format_version": FORMAT_VERSION,
             "sha256": _sha256(file),
         })
+
     if not stored:
         return None
+
     return {
         "format_version": FORMAT_VERSION,
         "state_sha256": state_digest,
@@ -232,66 +173,74 @@ def save_references(checkpoint, entries, state_digest):
     }
 
 
-def load_references(
-    box, 
-    checkpoint, 
-    metadata, 
-    config
-):
-    """Verify *all* archives before installing any cached resource."""
+def load_references(box, checkpoint, metadata, config):
+    """Verify all resources before installing any of them."""
     if metadata is None:
         return
 
-    if not isinstance(metadata, dict) or metadata.get("format_version") != FORMAT_VERSION:
-        raise ValueError("Unsupported reference checkpoint manifest")
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("format_version")
+        != FORMAT_VERSION
+    ):
+        raise ValueError(
+            "Unsupported reference checkpoint manifest"
+        )
 
-    if metadata.get("state_sha256") != fitted_state_digest(checkpoint, config):
-        raise ValueError("Reference fitted-state checksum mismatch")
+    if metadata.get("state_sha256") != fitted_state_digest(
+        checkpoint, config
+    ):
+        raise ValueError(
+            "Reference fitted-state checksum mismatch"
+        )
 
     items = metadata.get("items")
     if not isinstance(items, list):
-        raise ValueError("Invalid reference checkpoint entries")
+        raise ValueError(
+            "Invalid reference checkpoint entries"
+        )
 
+    types = reference_types()
     recovered = {}
+
     for item in items:
         if not isinstance(item, dict):
-            raise ValueError("Invalid reference checkpoint item")
+            raise ValueError(
+                "Invalid reference checkpoint item"
+            )
+
         spec = canonical_spec(item["spec"])
         key = reference_key(spec)
+        kind = spec["type"]
+        cls = types.get(kind)
+
         if (
             key != item.get("key")
-            or spec["type"] not in CODEC_TYPES
+            or cls is None
             or spec.get("version") != FORMAT_VERSION
             or item.get("format_version") != FORMAT_VERSION
             or item.get("filename") != f"{key}.npz"
             or key in recovered
         ):
-            raise ValueError("Incompatible reference resource metadata")
-        file = Path(checkpoint) / "references" / f"{key}.npz"
+            raise ValueError(
+                "Incompatible reference resource metadata"
+            )
+
+        file = (
+            Path(checkpoint)
+            / "references"
+            / f"{key}.npz"
+        )
+
         if _sha256(file) != item.get("sha256"):
-            raise ValueError("Reference checksum mismatch")
+            raise ValueError(
+                "Reference checksum mismatch"
+            )
+
         with np.load(file, allow_pickle=False) as archive:
-            value = _decode(spec["type"], archive)
+            value = cls.from_state_dict(archive, spec)
+
         recovered[key] = (spec, value)
+
     box.references.restore(recovered)
     return None
-
-
-def validate_requested(box, scorers, entries):
-    """Fail instead of silently omitting explicitly requested resources."""
-    for name, scorer in scorers.items():
-        hook = getattr(scorer, "reference_specs", None)
-        if not callable(hook):
-            continue
-        for spec in hook(box):
-            spec = canonical_spec(spec)
-            key = reference_key(spec)
-            if spec["type"] not in CODEC_TYPES or spec.get("version") != FORMAT_VERSION:
-                raise ValueError(
-                    f"Scorer {name!r} requested a reference without a "
-                    f"safe persistence codec: {spec['type']!r}"
-                )
-            if key not in entries:
-                raise ValueError(
-                    f"Scorer {name!r} did not prepare declared reference {key}"
-                )

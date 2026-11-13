@@ -44,6 +44,22 @@ class EuclideanReference:
             features=X,
         )
 
+    def state_dict(self):
+        """Persist features; reconstruct NN index on load."""
+        return {
+            "features": np.asarray(
+                self.features,
+                dtype=np.float64,
+            ),
+        }
+
+    @classmethod
+    def from_state_dict(cls, state, spec):
+        features = np.asarray(state["features"])
+        if features.dtype != np.float64:
+            raise ValueError("Expected float64 Euclidean features")
+        return cls.build(features)
+
     def distance(self, X, *, n_neighbors: int = 1) -> NDArray:
         """Mean distance to the k nearest training observations."""
         X = np.asarray(X, dtype=np.float64)
@@ -85,16 +101,6 @@ class EuclideanDistance:
             raise ValueError("n_neighbors must be positive")
 
 
-    def reference_specs(self, box):
-        return ({
-            "type": "euclidean", 
-            "version": self.version,
-            "features": list(box.features),
-            "metric": "euclidean", 
-            "algorithm": "auto",
-            "dtype": "float64",
-        },)
-
     def prepare(self, box, *, batch_size=1024):
         """Build or reuse the training-reference nearest-neighbour index."""
         from .reference import feature_batches
@@ -111,7 +117,14 @@ class EuclideanDistance:
             )
 
         return box.references.get_or_build(
-            self.reference_specs(box)[0], 
+            {
+                "type": "euclidean",
+                "version": self.version,
+                "features": list(box.features),
+                "metric": "euclidean",
+                "algorithm": "auto",
+                "dtype": "float64",
+            }, 
             build,
         )
 

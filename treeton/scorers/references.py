@@ -2,6 +2,8 @@
 """Per-Box cache of prepared reference resources."""
 
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from hashlib import sha256
 from threading import RLock
 import json
@@ -42,6 +44,7 @@ class ReferenceCache:
     def __init__(self):
         self._lock = RLock()
         self._entries = {}
+        self._requested = ContextVar('requested_references', default=None)
 
     def get_or_build(
         self,
@@ -54,7 +57,20 @@ class ReferenceCache:
         with self._lock:
             if key not in self._entries:
                 self._entries[key] = (spec, builder())
+            requested = self._requested.get()
+            if requested is not None:
+                requested.add(key)
             return self._entries[key][1]
+
+    @contextmanager
+    def track(self):
+        """Collect resource keys accessed in the current context."""
+        requested = set()
+        token = self._requested.set(requested)
+        try:
+            yield requested
+        finally:
+            self._requested.reset(token)
 
     def clear(self):
         with self._lock:
