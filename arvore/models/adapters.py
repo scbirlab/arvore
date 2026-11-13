@@ -404,8 +404,16 @@ class LightGBMAdapter(SklearnAdapter):
         _require_validation(validation, early_stopping_rounds)
         kw = _kwargs(fit_kwargs)
 
-        if "eval_set" in kw:
-            raise ValueError("Use validation= instead of fit.eval_set")
+        if {"eval_set", "eval_X", "eval_y"} & kw.keys():
+            raise ValueError(
+                "Use validation= instead of fit.eval_set/eval_X/eval_y"
+            )
+        if validation is not None:
+            X_val, y_val = validation
+            if _lightgbm_has_eval_xy(estimator):
+                kw["eval_X"], kw["eval_y"] = (X_val,), (y_val,)
+            else:
+                kw["eval_set"] = [(X_val, y_val)]
 
         callbacks = list(kw.pop("callbacks", None) or [])
 
@@ -436,6 +444,12 @@ class LightGBMAdapter(SklearnAdapter):
             kw["callbacks"] = callbacks
 
         estimator.fit(X, y, **kw)
+
+
+def _lightgbm_has_eval_xy(estimator):
+    """LightGBM >= 4.6 replaces eval_set with eval_X/eval_y."""
+    from inspect import signature
+    return "eval_X" in signature(type(estimator).fit).parameters
 
 
 @register_adapter(name="catboost", ext="cbm")
