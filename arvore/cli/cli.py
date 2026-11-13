@@ -10,6 +10,7 @@ from .. import (
     __version__,
     app_name,
 )
+from .evaluate import _evaluate
 from .predict import _predict
 from .train import _train
 
@@ -27,6 +28,12 @@ def main() -> None:
         default=None,
         type=str,
         help="Where to save table",
+    )
+    data_opt = CLIOption(
+        "--data",
+        "-d",
+        default=None,
+        type=str,
     )
     checkpoint_out = CLIOption(
         "--checkpoint",
@@ -171,12 +178,7 @@ def main() -> None:
             output_name,
             checkpoint_out,
             pipeline_opt,
-            CLIOption(
-                "--data",
-                "-d",
-                default=None,
-                type=str,
-            ),
+            data_opt.replace(help="Data to predict on."),
             config_opt.replace(**{
                 "required": False, 
                 "default": None,
@@ -185,6 +187,41 @@ def main() -> None:
             cache_opt,
         ],
         main=_predict,
+    )
+
+    evaluate = CLICommand(
+        "evaluate",
+        description="Evaluate a fitted Box on labelled data.",
+        options=[
+            input_name,
+            allow_trees,
+            data_opt.replace(help="Labelled evaluation dataset."),
+            start,
+            stop,
+            CLIOption(
+                "--metrics",
+                nargs="*",
+                default=None,
+                help="Regression metrics to calculate.",
+            ),
+            CLIOption(
+                "--result",
+                "-r",
+                required=False,
+                default=None,
+                type=str,
+                help="Where to save metrics json",
+            ),
+            output_name,
+            pipeline_opt,
+            config_opt.replace(**{
+                "required": False,
+                "default": None,
+            }),
+            set_opt,
+            cache_opt,
+        ],
+        main=_evaluate,
     )
 
     app = CLIApp(
@@ -197,6 +234,7 @@ def main() -> None:
         commands=[
             train,
             predict,
+            evaluate,
         ],
     )
 

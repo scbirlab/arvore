@@ -12,7 +12,7 @@ Arvore brings together model training, feature preprocessing, data provenance an
 
 Use it interactively from Python or through a reproducible command-line interface, from a laptop to an HPC cluster.
 
-Arvore currently focuses on regression and is under active alpha development.
+Arvore currently focuses on regression and is under active development.
 
 ## Installation
 
@@ -34,7 +34,7 @@ pip install "arvore[bio]"    # Biological feature tools
 For the latest development version:
 
 ```bash
-pip install "git+https://github.com/scbirlab/treeton.git@dev"
+pip install "git+https://github.com/scbirlab/arvore.git@dev"
 ```
 
 ## Quick start
@@ -97,6 +97,19 @@ The resulting table retains the input columns and adds predictions and requested
 | x1 | x2 | prediction:y | score:tree_sd:y | score:feature_distance |
 | --- | --- | --- | --- | --- |
 | ... | ... | ... | ... | ... |
+
+Evaluate against labelled data:
+
+```bash
+arvore evaluate model.ao \
+    --trust-sklearn-trees \
+    --data test.csv \
+    --metrics rmse mae pearson spearman \
+    --result metrics.json \
+    --output evaluated.csv
+```
+
+Metrics are printed as JSON, or written to `--result`. `--output` saves the predictions alongside the labelled data.
 
 The same configuration can be reused across datasets and overridden from the command line.
 
@@ -346,6 +359,8 @@ The resulting feature can then be selected for model training.
 
 Arvore also supports batched predictions, making it suitable for evaluating large candidate datasets without materialising every prediction batch simultaneously.
 
+Predictions and evaluations run through Hugging Face `Dataset.map` and are fingerprinted by the input data, the requested scorers and a content fingerprint of the fitted `Box` (`box.fingerprint`). For file-backed datasets, repeating a prediction with the same model, data and scorers loads the cached result, including after the checkpoint is reloaded.
+
 ## Evaluation and reproducibility
 
 Evaluate models against held-out data using standard regression metrics:
@@ -359,6 +374,17 @@ predictions, metrics = box.evaluate(
         "pearson",
         "spearman"
     ]
+)
+```
+
+Metrics follow the scikit-learn argument order, `metric(y_true, y_pred)`, so custom metrics can be passed directly:
+
+```python
+from sklearn.metrics import r2_score
+
+predictions, metrics = box.evaluate(
+    "validation.csv",
+    metrics={"rmse": "rmse", "r2": r2_score}
 )
 ```
 
@@ -541,8 +567,8 @@ Adapters handle estimator-specific fitting, prediction, model capabilities and p
 Clone the repository and install development dependencies:
 
 ```bash
-git clone https://github.com/scbirlab/treeton.git
-cd treeton
+git clone https://github.com/scbirlab/arvore.git
+cd arvore
 pip install -e ".[dev]"
 ```
 
