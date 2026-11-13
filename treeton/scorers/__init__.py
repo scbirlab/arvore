@@ -9,7 +9,7 @@ from .registry import (
 )
 from .ensemble import EnsembleSD, TreeSD
 from .leaves import InverseLeafOccupancy
-from .distances import EuclideanDistance
+from .distances import FeatureDistance
 from .tanimoto import TanimotoDistance
 
 __all__ = [
@@ -23,6 +23,6 @@ __all__ = [
     "EnsembleSD",
     "TreeSD",
     "InverseLeafOccupancy",
-    "EuclideanDistance",
+    "FeatureDistance",
     "TanimotoDistance",
 ]

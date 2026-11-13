@@ -118,7 +118,7 @@ The output contains the original data and a `prediction:y` column.
 treeton predict model.tt \
     --trust-sklearn-trees \
     --data candidates.csv \
-    --score tree_sd inverse_leaf_occupancy euclidean_distance \
+    --score tree_sd inverse_leaf_occupancy feature_distance \
     --output scored.csv
 ```
 
@@ -126,7 +126,7 @@ Alongside the predictions, this adds columns such as:
 
 - `score:tree_sd:y`
 - `score:inverse_leaf_occupancy`
-- `score:euclidean_distance`
+- `score:feature_distance`
 
 These help identify predictions made with greater model disagreement or farther from the training observations.
 
@@ -139,7 +139,7 @@ Treeton can calculate multiple uncertainty and novelty diagnostics in the same p
 | `ensemble_sd` | Disagreement between ensemble members |
 | `tree_sd` | Variation in predictions across individual trees |
 | `inverse_leaf_occupancy` | How sparsely populated the candidate's tree leaves are in the training data |
-| `euclidean_distance` | Distance to the nearest training observation in model feature space |
+| `feature_distance` | Distance to the nearest training observation in model feature space |
 | `tanimoto_distance` | Chemical fingerprint distance to the nearest training compound |
 
 Higher values generally indicate greater disagreement or novelty.
@@ -171,7 +171,7 @@ results = box.predict(
     "candidates.csv",
     score=[
         "tree_sd",
-        "euclidean_distance",
+        "feature_distance",
         InverseLeafOccupancy(
             normalization="reference_percentile"
         )
@@ -188,7 +188,7 @@ results = box.predict(
     "candidates.csv",
     score={
         "forest_variation": "tree_sd",
-        "feature_distance": "euclidean_distance",
+        "feature_distance": "feature_distance",
         "leaf_percentile": InverseLeafOccupancy(
             normalization="reference_percentile"
         )
@@ -240,7 +240,7 @@ For parameterised scorers, create a prediction configuration such as `predict.js
         "normalization": "reference_percentile"
       }
     },
-    "feature_distance": "euclidean_distance"
+    "feature_distance": "feature_distance"
   }
 }
 ```
@@ -381,8 +381,8 @@ the next Box checkpoint, and restored without recomputing their source features.
 
 ```python
 # Prediction computes the Euclidean reference index only once.
-box.predict(candidates, score=["euclidean_distance", "tree_sd"])
-box.predict(more_candidates, score="euclidean_distance")
+box.predict(candidates, score=["feature_distance", "tree_sd"])
+box.predict(more_candidates, score="feature_distance")
 
 # Saves the already-prepared Euclidean reference and also prepares the two
 # additional scorers' reference resources before checkpointing.

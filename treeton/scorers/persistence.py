@@ -57,14 +57,15 @@ def fitted_state_digest(checkpoint, config):
 def reference_types():
     """Registry of supported safe reference formats."""
     from .leaves import LeafReferences
-    from .distances import EuclideanReference
-    from .tanimoto import TanimotoReference
+    from .distances import FeatureReference
+    from .tanimoto import TanimotoReference, ReferenceLabels
 
     return {
         "leaf_counts": LeafReferences,
         "leaf_percentile": LeafReferences,
-        "euclidean": EuclideanReference,
+        "feature_distance": FeatureReference,
         "tanimoto": TanimotoReference,
+        "tanimoto_labels": ReferenceLabels,
     }
 
 

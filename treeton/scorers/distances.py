@@ -1,4 +1,4 @@
-"""Nearest-reference distance diagnostics."""
+"""Nearest-reference distances in model feature space."""
 
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -10,99 +10,92 @@ from .base import ScoreContext
 from .registry import register_scorer
 
 
-
 @dataclass(frozen=True)
-class EuclideanReference:
-    """Fitted exact nearest-neighbour reference."""
+class FeatureReference:
+    """Exact nearest-neighbour index over transformed training features."""
 
     index: Any
-    n_reference: int
-    n_features: int
     features: NDArray
+    metric: str
+
+    @property
+    def n_reference(self):
+        return len(self.features)
+
+    @property
+    def n_features(self):
+        return self.features.shape[1]
 
     @classmethod
-    def build(cls, X) -> "EuclideanReference":
+    def build(cls, X, *, metric="euclidean"):
         from sklearn.neighbors import NearestNeighbors
 
         X = np.asarray(X, dtype=np.float64)
-
         if X.ndim != 2 or not all(X.shape):
             raise ValueError("Reference features must be nonempty 2D")
-
         if not np.all(np.isfinite(X)):
             raise ValueError("Reference features must be finite")
+        if not isinstance(metric, str) or not metric:
+            raise ValueError("metric must be a nonempty sklearn metric name")
 
         index = NearestNeighbors(
-            metric="euclidean",
+            metric=metric,
             algorithm="auto",
         ).fit(X)
 
-        return cls(
-            index=index,
-            n_reference=len(X),
-            n_features=X.shape[1],
-            features=X,
-        )
+        return cls(index=index, features=X, metric=metric)
 
     def state_dict(self):
-        """Persist features; reconstruct NN index on load."""
-        return {
-            "features": np.asarray(
-                self.features,
-                dtype=np.float64,
-            ),
-        }
+        return {"features": np.asarray(self.features, dtype=np.float64)}
 
     @classmethod
     def from_state_dict(cls, state, spec):
         features = np.asarray(state["features"])
         if features.dtype != np.float64:
-            raise ValueError("Expected float64 Euclidean features")
-        return cls.build(features)
+            raise ValueError("Expected float64 feature reference")
+        return cls.build(features, metric=spec["metric"])
 
-    def distance(self, X, *, n_neighbors: int = 1) -> NDArray:
-        """Mean distance to the k nearest training observations."""
-        X = np.asarray(X, dtype=np.float64)
-
-        if not 1 <= n_neighbors <= self.n_reference:
+    def distance(self, X, *, n_neighbors=1) -> NDArray:
+        """Mean distance to k nearest reference rows."""
+        if not isinstance(n_neighbors, int) or not (
+            1 <= n_neighbors <= self.n_reference
+        ):
             raise ValueError("Invalid number of neighbours")
 
+        X = np.asarray(X, dtype=np.float64)
         if X.ndim != 2 or X.shape[1] != self.n_features:
             raise ValueError(
                 f"Expected (samples, {self.n_features}), got {X.shape}"
             )
-
         if not np.all(np.isfinite(X)):
             raise ValueError("Candidate features must be finite")
-
-        if not len(X):
-            return np.empty(0, dtype=float)
+        if len(X) == 0:
+            return np.empty(0, dtype=np.float64)
 
         distances, _ = self.index.kneighbors(
-            X,
-            n_neighbors=n_neighbors,
+            X, n_neighbors=n_neighbors
         )
         return distances.mean(axis=1)
 
 
-
 @register_scorer
 @dataclass(frozen=True)
-class EuclideanDistance:
-    """Distance to the nearest training reference in feature space."""
+class FeatureDistance:
+    """Mean k-neighbour distance in transformed feature space."""
 
+    name: ClassVar[str] = "feature_distance"
+    version: ClassVar[int] = 1
+
+    metric: str = "euclidean"
     n_neighbors: int = 1
-    name: ClassVar[str] = "euclidean_distance"
-    version: ClassVar[str] = 1
-
 
     def __post_init__(self):
-        if self.n_neighbors < 1:
+        if not isinstance(self.metric, str) or not self.metric:
+            raise ValueError("metric must be a nonempty string")
+        if not isinstance(self.n_neighbors, int) or self.n_neighbors < 1:
             raise ValueError("n_neighbors must be positive")
 
-
     def prepare(self, box, *, batch_size=1024):
-        """Build or reuse the training-reference nearest-neighbour index."""
         from .reference import feature_batches
 
         def build():
@@ -112,29 +105,27 @@ class EuclideanDistance:
             ]
             if not blocks:
                 raise ValueError("Training reference dataset is empty")
-            return EuclideanReference.build(
-                np.concatenate(blocks, axis=0)
+            return FeatureReference.build(
+                np.concatenate(blocks, axis=0),
+                metric=self.metric,
             )
 
         return box.references.get_or_build(
             {
-                "type": "euclidean",
+                "type": "feature_distance",
                 "version": self.version,
                 "features": list(box.features),
-                "metric": "euclidean",
+                "metric": self.metric,
                 "algorithm": "auto",
                 "dtype": "float64",
-            }, 
+            },
             build,
         )
 
     def __call__(self, context: ScoreContext) -> NDArray:
-        reference = context.state
-
-        if reference is None:
-            raise ValueError(
-                "euclidean_distance requires a fitted "
-                "training-reference index"
-            )
-
-        return reference.distance(context.X)
+        if context.state is None:
+            raise ValueError("Feature reference has not been prepared")
+        return context.state.distance(
+            context.X,
+            n_neighbors=self.n_neighbors,
+        )

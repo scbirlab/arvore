@@ -1,6 +1,6 @@
 [project]
 name = "treeton"
-version = "0.0.4"
+version = "0.0.5"
 authors = [
   { name="Eachan Johnson", email="eachan.johnson@crick.ac.uk" },
 ]

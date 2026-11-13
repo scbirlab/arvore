@@ -15,7 +15,7 @@ from sklearn.ensemble import RandomForestRegressor
 
 from treeton import Box
 from treeton.scorers import EnsembleSD, InverseLeafOccupancy, TanimotoDistance
-from treeton.scorers.distances import EuclideanReference
+from treeton.scorers.distances import FeatureReference
 from treeton.scorers.references import ReferenceCache, reference_key
 from treeton.scorers.runner import ScoringRunner
 
@@ -50,18 +50,18 @@ def _load(path):
 
 def test_reuses_reference_across_predictions_and_aliases(fitted_box, monkeypatch):
     box, data = fitted_box
-    orig = EuclideanReference.build.__func__
+    orig = FeatureReference.build.__func__
     calls = []
 
     def counted(cls, X):
         calls.append(len(X))
         return orig(cls, X)
 
-    monkeypatch.setattr(EuclideanReference, "build", classmethod(counted))
-    _predict(box, data, "euclidean_distance")
+    monkeypatch.setattr(FeatureReference, "build", classmethod(counted))
+    _predict(box, data, "feature_distance")
     _predict(box, data, {
-        "distance_1": "euclidean_distance",
-        "distance_2": "euclidean_distance",
+        "distance_1": "feature_distance",
+        "distance_2": "feature_distance",
     })
     assert calls == [len(data)]
     assert len(box.references.snapshot()) == 1
@@ -80,7 +80,7 @@ def test_leaf_raw_and_percentile_share_leaf_counts(fitted_box):
 def test_save_prepared_references_automatically(fitted_box, tmp_path):
     box, data = fitted_box
     original = _predict(box, data, [
-        "euclidean_distance", "inverse_leaf_occupancy", "tanimoto_distance",
+        "feature_distance", "inverse_leaf_occupancy", "tanimoto_distance",
     ])
     count = len(box.references.snapshot())
     path = tmp_path / "model.tt"
@@ -97,12 +97,12 @@ def test_save_prepared_references_automatically(fitted_box, tmp_path):
             AssertionError("Tanimoto reference unexpectedly recomputed")
         )
         again = _predict(restored, data, [
-            "euclidean_distance", "inverse_leaf_occupancy", "tanimoto_distance",
+            "feature_distance", "inverse_leaf_occupancy", "tanimoto_distance",
         ])
     finally:
         TD.prepare_reference = original_prepare
     for column in (
-        "score:euclidean_distance",
+        "score:feature_distance",
         "score:inverse_leaf_occupancy",
         "score:tanimoto_distance",
     ):
@@ -140,11 +140,11 @@ def test_distinct_reference_configs(fitted_box):
 
 def test_refit_clears_old_references(fitted_box):
     box, data = fitted_box
-    _predict(box, data, "euclidean_distance")
+    _predict(box, data, "feature_distance")
     assert len(box.references.snapshot()) == 1
     box.fit(data, skip_eval=True)
     assert not box.references.snapshot()
-    _predict(box, data, "euclidean_distance")
+    _predict(box, data, "feature_distance")
     assert len(box.references.snapshot()) == 1
 
 
@@ -184,9 +184,9 @@ def test_concurrent_first_use_builds_once():
 
 
 def test_keys_are_canonical_and_not_alias_based():
-    first = {"type": "euclidean", "version": 1, "metric": "euclidean"}
-    other_order = {"metric": "euclidean", "version": 1, "type": "euclidean"}
-    changed = {"type": "euclidean", "version": 1, "metric": "cityblock"}
+    first = {"type": "feature_distance", "version": 1, "metric": "euclidean"}
+    other_order = {"metric": "euclidean", "version": 1, "type": "feature_distance"}
+    changed = {"type": "feature_distance", "version": 1, "metric": "cityblock"}
     assert reference_key(first) == reference_key(other_order)
     assert reference_key(first) != reference_key(changed)
 
@@ -194,7 +194,7 @@ def test_keys_are_canonical_and_not_alias_based():
 def test_corruption_and_incompatible_metadata(fitted_box, tmp_path):
     box, _ = fitted_box
     path = tmp_path / "model.tt"
-    box.save(path, score="euclidean_distance")
+    box.save(path, score="feature_distance")
     config_path = path / "config.json"
     manifest = json.loads(config_path.read_text())
     entry = manifest["artefacts"]["references"]["items"][0]
@@ -204,7 +204,7 @@ def test_corruption_and_incompatible_metadata(fitted_box, tmp_path):
         _load(path)
 
     # Recreate valid archive, then invalidate the specification.
-    box.save(path, score="euclidean_distance")
+    box.save(path, score="feature_distance")
     manifest = json.loads(config_path.read_text())
     manifest["artefacts"]["references"]["items"][0]["spec"]["version"] = 99
     config_path.write_text(json.dumps(manifest))
@@ -215,7 +215,7 @@ def test_corruption_and_incompatible_metadata(fitted_box, tmp_path):
 def test_modified_fitted_box_config_rejected(fitted_box, tmp_path):
     box, _ = fitted_box
     path = tmp_path / "model.tt"
-    box.save(path, score="euclidean_distance")
+    box.save(path, score="feature_distance")
     manifest_path = path / "config.json"
     manifest = json.loads(manifest_path.read_text())
     manifest["config"]["features"] = ["changed"]
@@ -336,9 +336,9 @@ def test_tanimoto_numpy2_matches_brute_force():
 
 
 def test_euclidean_k_neighbours():
-    from treeton.scorers.distances import EuclideanReference
+    from treeton.scorers.distances import FeatureReference
 
-    reference = EuclideanReference.build(
+    reference = FeatureReference.build(
         np.array([[0.0], [2.0], [5.0]])
     )
     queries = np.array([[1.0], [4.0]])
@@ -354,13 +354,13 @@ def test_euclidean_k_neighbours():
 
 
 def test_neighbour_count_does_not_duplicate_references(fitted_box):
-    from treeton.scorers.distances import EuclideanDistance
+    from treeton.scorers.distances import FeatureDistance
 
     box, data = fitted_box
 
     scorers = [
-        EuclideanDistance(n_neighbors=1),
-        EuclideanDistance(n_neighbors=4),
+        FeatureDistance(n_neighbors=1),
+        FeatureDistance(n_neighbors=4),
         TanimotoDistance(n_neighbors=1),
         TanimotoDistance(n_neighbors=4),
     ]
@@ -420,7 +420,7 @@ def test_reference_cache_retains_specification():
 
 def test_save_tracks_actual_reference_requests(fitted_box, tmp_path):
     """A scorer need not separately declare its reference keys."""
-    from treeton.scorers.distances import EuclideanDistance
+    from treeton.scorers.distances import FeatureDistance
 
     box, data = fitted_box
 
@@ -428,7 +428,7 @@ def test_save_tracks_actual_reference_requests(fitted_box, tmp_path):
         name = "custom_distance"
 
         def prepare(self, box, *, batch_size):
-            return EuclideanDistance().prepare(
+            return FeatureDistance().prepare(
                 box, batch_size=batch_size
             )
 
@@ -447,5 +447,5 @@ def test_save_tracks_actual_reference_requests(fitted_box, tmp_path):
     restored = _load(path)
     assert len(restored.references.snapshot()) == 1
 
-    result = _predict(restored, data, "euclidean_distance")
-    assert "score:euclidean_distance" in result.column_names
+    result = _predict(restored, data, "feature_distance")
+    assert "score:feature_distance" in result.column_names

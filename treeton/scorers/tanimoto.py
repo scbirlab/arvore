@@ -54,7 +54,7 @@ def _encode_fingerprints(fingerprints, n_bits=None):
 
 @dataclass(frozen=True)
 class TanimotoReference:
-    """Packed binary fingerprints and precomputed bit counts."""
+    """Packed fingerprints for exact Tanimoto nearest-neighbour search."""
 
     packed: NDArray
     counts: NDArray
@@ -62,60 +62,37 @@ class TanimotoReference:
 
     @classmethod
     def build(cls, fingerprints):
-        packed, counts, n_bits = _encode_fingerprints(
-            fingerprints
-        )
-
+        packed, counts, n_bits = _encode_fingerprints(fingerprints)
         if not len(packed):
             raise ValueError("Reference fingerprints are empty")
-
         return cls(packed, counts, n_bits)
 
-    
     def state_dict(self):
-        """Persist packed fingerprints and population counts."""
         return {
-            "packed": np.asarray(
-                self.packed, 
-                dtype=np.uint8,
-            ),
-            "counts": np.asarray(
-                self.counts, 
-                dtype=np.int32,
-            ),
-            "n_bits": np.array(
-                self.n_bits, 
-                dtype=np.int64,
-            ),
+            "packed": np.asarray(self.packed, dtype=np.uint8),
+            "counts": np.asarray(self.counts, dtype=np.int32),
+            "n_bits": np.array(self.n_bits, dtype=np.int64),
         }
 
     @classmethod
     def from_state_dict(cls, state, spec):
-        n_bits_array = np.asarray(state["n_bits"])
+        packed = np.asarray(state["packed"])
+        counts = np.asarray(state["counts"])
+        width = np.asarray(state["n_bits"])
 
-        if (
-            n_bits_array.shape != ()
-            or not np.issubdtype(
-                n_bits_array.dtype, 
-                np.integer
-            )
+        if width.shape != () or not np.issubdtype(
+            width.dtype, np.integer
         ):
             raise ValueError("Invalid fingerprint width")
 
-        n_bits = int(n_bits_array)
-
-        packed = np.asarray(state["packed"])
-        counts = np.asarray(state["counts"])
-
+        n_bits = int(width)
         if (
             packed.ndim != 2
-            or len(packed) < 1
+            or len(packed) == 0
             or packed.dtype != np.uint8
             or counts.ndim != 1
+            or counts.dtype != np.int32
             or len(counts) != len(packed)
-            or not np.issubdtype(
-                counts.dtype, np.integer
-            )
             or n_bits < 1
             or packed.shape[1] != (n_bits + 7) // 8
             or np.any(
@@ -124,82 +101,68 @@ class TanimotoReference:
                 )
             )
         ):
-            raise ValueError(
-                "Invalid Tanimoto reference archive"
-            )
+            raise ValueError("Invalid Tanimoto reference archive")
 
         if n_bits % 8:
-            padding_mask = 255 ^ (
-                (1 << (n_bits % 8)) - 1
-            )
-            if np.any(packed[:, -1] & padding_mask):
-                raise ValueError(
-                    "Nonzero fingerprint padding bits"
-                )
+            mask = 255 ^ ((1 << (n_bits % 8)) - 1)
+            if np.any(packed[:, -1] & mask):
+                raise ValueError("Nonzero fingerprint padding bits")
 
-        return cls(
-            packed=packed.copy(),
-            counts=counts.astype(
-                np.int32, 
-                copy=True,
-            ),
-            n_bits=n_bits,
-        )
+        return cls(packed.copy(), counts.copy(), n_bits)
 
     def distance(
         self,
         fingerprints,
         *,
-        n_neighbors: int = 1,
-        query_chunk: int = 32,
-        reference_chunk: int = 512,
-    ) -> NDArray:
-        """Mean exact Tanimoto distance to the k closest references.
+        n_neighbors=1,
+        return_indices=False,
+        query_chunk=32,
+        reference_chunk=512,
+    ):
+        """Mean exact distance to k closest references.
 
-        Uses bit-packed fingerprints and bounded pairwise blocks.
+        Indices, when requested, are ordered by increasing distance,
+        breaking similarity ties by original training-row index.
         """
+        if not isinstance(n_neighbors, int) or not (
+            1 <= n_neighbors <= len(self.packed)
+        ):
+            raise ValueError("Invalid number of neighbours")
         if query_chunk < 1 or reference_chunk < 1:
             raise ValueError("Chunk sizes must be positive")
 
-        if not 1 <= n_neighbors <= len(self.packed):
-            raise ValueError("Invalid number of neighbours")
-
         queries, q_counts, _ = _encode_fingerprints(
-            fingerprints,
-            n_bits=self.n_bits,
+            fingerprints, n_bits=self.n_bits
+        )
+        distances = np.empty(len(queries), dtype=np.float64)
+        neighbors = (
+            np.empty((len(queries), n_neighbors), dtype=np.int64)
+            if return_indices else None
         )
 
-        result = np.empty(len(queries), dtype=np.float64)
+        for start in range(0, len(queries), query_chunk):
+            q = queries[start:start + query_chunk]
+            qc = q_counts[start:start + query_chunk]
+            width = len(q)
 
-        for q_start in range(0, len(queries), query_chunk):
-            q = queries[q_start:q_start + query_chunk]
-            qc = q_counts[q_start:q_start + query_chunk]
-
-            # Retain only the k highest similarities per query.
-            best = np.full(
-                (len(q), n_neighbors),
-                -np.inf,
-                dtype=np.float64,
+            best_sim = np.full(
+                (width, n_neighbors), -np.inf, dtype=np.float64
+            )
+            best_idx = np.full(
+                (width, n_neighbors),
+                len(self.packed),
+                dtype=np.int64,
             )
 
-            for r_start in range(0, len(self.packed), reference_chunk):
-                r = self.packed[r_start:r_start + reference_chunk]
-                rc = self.counts[r_start:r_start + reference_chunk]
+            for offset in range(0, len(self.packed), reference_chunk):
+                r = self.packed[offset:offset + reference_chunk]
+                rc = self.counts[offset:offset + reference_chunk]
 
                 intersection = np.bitwise_count(
-                    np.bitwise_and(
-                        q[:, None, :],
-                        r[None, :, :],
-                    )
+                    np.bitwise_and(q[:, None, :], r[None, :, :])
                 ).sum(axis=2, dtype=np.int32)
 
-                union = (
-                    qc[:, None]
-                    + rc[None, :]
-                    - intersection
-                )
-
-                # Two empty fingerprints have similarity 1.
+                union = qc[:, None] + rc[None, :] - intersection
                 similarity = np.divide(
                     intersection,
                     union,
@@ -207,23 +170,57 @@ class TanimotoReference:
                     where=union != 0,
                 )
 
-                combined = np.concatenate(
-                    (best, similarity),
-                    axis=1,
+                index = np.broadcast_to(
+                    np.arange(offset, offset + len(r), dtype=np.int64),
+                    similarity.shape,
                 )
 
-                # Partial selection avoids sorting every similarity.
-                best = np.partition(
-                    combined,
-                    kth=combined.shape[1] - n_neighbors,
-                    axis=1,
-                )[:, -n_neighbors:]
+                candidate_sim = np.concatenate(
+                    (best_sim, similarity), axis=1
+                )
+                candidate_idx = np.concatenate(
+                    (best_idx, index), axis=1
+                )
 
-            result[q_start:q_start + len(q)] = (
-                1. - best.mean(axis=1)
+                # Deterministic tie-breaking, vectorised over queries.
+                order = np.lexsort(
+                    (candidate_idx, -candidate_sim), axis=1
+                )[:, :n_neighbors]
+
+                best_sim = np.take_along_axis(
+                    candidate_sim, order, axis=1
+                )
+                best_idx = np.take_along_axis(
+                    candidate_idx, order, axis=1
+                )
+
+            distances[start:start + width] = (
+                1.0 - best_sim.mean(axis=1)
             )
+            if neighbors is not None:
+                neighbors[start:start + width] = best_idx
 
-        return np.clip(result, 0., 1.)
+        distances = np.clip(distances, 0.0, 1.0)
+        if return_indices:
+            return distances, neighbors
+        return distances
+
+
+@dataclass(frozen=True)
+class ReferenceLabels:
+    """Row-aligned string representations of reference observations."""
+
+    values: NDArray
+
+    def state_dict(self):
+        return {"values": self.values}
+
+    @classmethod
+    def from_state_dict(cls, state, spec):
+        values = np.asarray(state["values"])
+        if values.ndim != 1 or values.dtype.kind != "U":
+            raise ValueError("Invalid reference labels")
+        return cls(values.copy())
 
 
 @register_scorer
@@ -242,8 +239,17 @@ class TanimotoDistance:
     reference_batch_size: int = 2048
     query_chunk: int = 32
     reference_chunk: int = 512
+    return_neighbors: bool = False
+    neighbor_column: str = "smiles"
+    neighbor_delimiter: str = ";"
 
     def __post_init__(self):
+        if not isinstance(self.radius, int) or self.radius < 0:
+            raise ValueError("radius must be nonnegative")
+        if not isinstance(self.neighbor_column, str) or not self.neighbor_column:
+            raise ValueError("neighbor_column must be a nonempty string")
+        if not isinstance(self.neighbor_delimiter, str):
+            raise ValueError("neighbor_delimiter must be a string")
         if min(
             self.n_neighbors,
             self.reference_batch_size,
@@ -267,7 +273,7 @@ class TanimotoDistance:
                 {
                     "name": self.fingerprint_transform,
                     "kwargs": {
-                        "radius": 2,
+                        "radius": self.radius,
                     },
                 },
             ),
@@ -361,61 +367,104 @@ class TanimotoDistance:
             n_bits=n_bits,
         )
 
-    def prepare(self, box, *, batch_size=1024):
-        """Prepare packed training fingerprints once per fitted Box."""
+    def _reference_data(self, box):
+        """Find raw or retained rows in reference order."""
+        data = box._training_reference()
+        required = {self.column}
+        if self.return_neighbors:
+            required.add(self.neighbor_column)
 
-        def build():
-            data = box._training_reference()
-            columns = set(data.column_names)
-
-            if (
-                self.column not in columns
-                and self.structure_column not in columns
-            ):
-                # Recover auxiliary raw columns discarded by Aspect.
-                if box.pipeline.data_in is not None:
-                    source = box._unwrap(box.pipeline.data_in)
-                    if hasattr(source, "with_format"):
-                        source = source.with_format(None)
-                    source_columns = (
-                        set(source.column_names)
-                        if hasattr(source, "column_names")
-                        else set(source)
-                    )
+        if not required.issubset(set(data.column_names)):
+            source = getattr(box.pipeline, "data_in", None)
+            if source is not None:
+                source = box._unwrap(source)
+                if hasattr(source, "with_format"):
+                    source = source.with_format(None)
+                if hasattr(source, "column_names"):
                     if (
-                        self.column in source_columns
-                        or self.structure_column in source_columns
+                        self.column in source.column_names
+                        or self.structure_column in source.column_names
                     ):
                         data = source
-            return self.prepare_reference(data)
+        return data
 
-        return box.references.get_or_build(
-            {
-                "type": "tanimoto",
-                "version": self.version,
-                "column": self.column,
-                "structure_column": self.structure_column,
-                "fingerprint_transform": self.fingerprint_transform,
-                "encoding": "packbits-little",
-            }, 
-            build,
+    def prepare(self, box, *, batch_size=1024):
+        """Cache packed fingerprints and optional aligned labels separately."""
+        spec = {
+            "type": "tanimoto",
+            "version": self.version,
+            "column": self.column,
+            "structure_column": self.structure_column,
+            "fingerprint_transform": self.fingerprint_transform,
+            "radius": self.radius,
+            "encoding": "packbits-little",
+        }
+
+        reference = box.references.get_or_build(
+            spec,
+            lambda: self.prepare_reference(self._reference_data(box)),
         )
 
-    def __call__(self, context: ScoreContext) -> NDArray:
-        reference = context.state
-        if reference is None:
-            raise ValueError(
-                "Tanimoto reference has not been prepared"
-            )
+        if not self.return_neighbors:
+            return reference
+
+        label_spec = {
+            "type": "tanimoto_labels",
+            "version": 1,
+            "column": self.neighbor_column,
+            "fingerprint_reference": spec,
+        }
+
+        def build_labels():
+            data = self._reference_data(box)
+            if self.neighbor_column not in data.column_names:
+                raise ValueError(
+                    f"Training reference lacks neighbour column "
+                    f"{self.neighbor_column!r}"
+                )
+            values = data.with_format(None)[self.neighbor_column]
+            if any(not isinstance(value, str) for value in values):
+                raise ValueError(
+                    "Neighbour representations must be strings"
+                )
+            if len(values) != len(reference.packed):
+                raise ValueError(
+                    "Neighbour labels and fingerprints are not row-aligned"
+                )
+            return ReferenceLabels(np.asarray(values, dtype=str))
+
+        labels = box.references.get_or_build(label_spec, build_labels)
+        if len(labels.values) != len(reference.packed):
+            raise ValueError("Mismatched cached neighbour labels")
+        return reference, labels
+
+    def __call__(self, context: ScoreContext):
         if self.column not in context.batch:
             raise ValueError(
-                f"Candidate fingerprint column "
-                f"{self.column!r} is missing"
+                f"Candidate fingerprint column {self.column!r} is missing"
             )
-        return reference.distance(
+
+        if self.return_neighbors:
+            reference, labels = context.state
+            distances, indices = reference.distance(
+                context.batch[self.column],
+                n_neighbors=self.n_neighbors,
+                return_indices=True,
+                query_chunk=self.query_chunk,
+                reference_chunk=self.reference_chunk,
+            )
+            representations = labels.values[indices]
+            return {
+                "": distances,
+                "neighbor": [
+                    self.neighbor_delimiter.join(row)
+                    for row in representations
+                ],
+            }
+
+        return context.state.distance(
             context.batch[self.column],
             n_neighbors=self.n_neighbors,
             query_chunk=self.query_chunk,
             reference_chunk=self.reference_chunk,
         )
-

@@ -83,7 +83,7 @@ cat > "$workdir/experiment.json" <<'JSON'
         "class_path": "treeton.scorers.leaves.InverseLeafOccupancy",
         "init_args": {"normalization": "reference_percentile"}
       },
-      "euclidean_distance": "euclidean_distance"
+      "feature_distance": "feature_distance"
     }
   }
 }
@@ -120,7 +120,7 @@ treeton predict "$workdir/model.tt" \
     --trust-sklearn-trees \
     --data "$workdir/candidates.csv" \
     --config "$workdir/predict.json" \
-    --score ensemble_sd tree_sd inverse_leaf_occupancy euclidean_distance \
+    --score ensemble_sd tree_sd inverse_leaf_occupancy feature_distance \
     --disaggregate \
     --output "$workdir/predictions.csv"
 
@@ -138,7 +138,7 @@ for column in \
     "score:ensemble_sd:y" \
     "score:tree_sd:y" \
     "score:inverse_leaf_occupancy" \
-    "score:euclidean_distance" \
+    "score:feature_distance" \
     "score:leaf_percentile"
 do
     if [[ "$header" != *"$column"* ]]; then
