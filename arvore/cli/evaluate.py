@@ -2,6 +2,7 @@
 
 from argparse import Namespace
 import json
+from math import isfinite
 from pathlib import Path
 
 from carabiner.cliutils import clicommand
@@ -74,7 +75,7 @@ def _evaluate(args: Namespace) -> None:
     def serializable(value):
         if hasattr(value, "tolist"):
             value = value.tolist()
-        if isinstance(value, float) and not math.isfinite(value):
+        if isinstance(value, float) and not isfinite(value):
             return None
         if isinstance(value, list):
             return [serializable(item) for item in value]
