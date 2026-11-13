@@ -10,14 +10,16 @@ set -euox pipefail
 #   bash test/smoke_scorers.sh
 #
 # All work is done in a temporary directory.
-# The test calls the installed `treeton` executable directly.
+# The test calls the installed `arvore` executable directly.
 
-command -v treeton >/dev/null || {
-    echo "ERROR: treeton executable not found" >&2
+command -v arvore >/dev/null || {
+    echo "ERROR: arvore executable not found" >&2
     exit 1
 }
 script_dir=$(readlink -f $(dirname "$0"))
-workdir=$(readlink -f "$script_dir"/..)/outputs/hash
+OUTPUT_DIR=$(readlink -f "$script_dir"/..)/outputs/scorers
+workdir=${1:-"$OUTPUT_DIR"}
+mkdir -p "$workdir"
 
 echo "[1/5] Creating datasets and configuration"
 
@@ -75,6 +77,15 @@ cat > "$workdir/experiment.json" <<'JSON'
   },
   "fit": {
     "skip_eval": true
+  },
+  "save": {
+    "score": {
+      "leaf_percentile": {
+        "class_path": "arvore.scorers.leaves.InverseLeafOccupancy",
+        "init_args": {"normalization": "reference_percentile"}
+      },
+      "feature_distance": "feature_distance"
+    }
   }
 }
 JSON
@@ -84,7 +95,7 @@ cat > "$workdir/predict.json" <<'JSON'
   "batch_size": 2,
   "score": {
     "leaf_percentile": {
-      "class_path": "treeton.scorers.leaves.InverseLeafOccupancy",
+      "class_path": "arvore.scorers.leaves.InverseLeafOccupancy",
       "init_args": {
         "normalization": "reference_percentile"
       }
@@ -95,23 +106,24 @@ JSON
 
 echo "[2/5] Training and saving ensemble"
 
-treeton train "$workdir/train.csv" \
+arvore train "$workdir/train.csv" \
     --config "$workdir/experiment.json" \
-    --cache-leaf-reference \
-    --checkpoint "$workdir/model.tt"
+    --cache "$workdir/cache" \
+    --checkpoint "$workdir/model.ao"
 
-test -d "$workdir/model.tt" || {
+test -d "$workdir/model.ao" || {
     echo "ERROR: checkpoint directory missing" >&2
     exit 1
 }
 
 echo "[3/5] Predicting with configured and CLI scorers"
 
-treeton predict "$workdir/model.tt" \
+arvore predict "$workdir/model.ao" \
     --trust-sklearn-trees \
     --data "$workdir/candidates.csv" \
     --config "$workdir/predict.json" \
-    --score ensemble_sd tree_sd inverse_leaf_occupancy euclidean_distance \
+    --cache "$workdir/cache" \
+    --score ensemble_sd tree_sd inverse_leaf_occupancy feature_distance \
     --disaggregate \
     --output "$workdir/predictions.csv"
 
@@ -129,7 +141,7 @@ for column in \
     "score:ensemble_sd:y" \
     "score:tree_sd:y" \
     "score:inverse_leaf_occupancy" \
-    "score:euclidean_distance" \
+    "score:feature_distance" \
     "score:leaf_percentile"
 do
     if [[ "$header" != *"$column"* ]]; then
@@ -151,8 +163,9 @@ echo "[5/5] Testing Tanimoto SMILES fingerprint generation"
 
 # Parquet is used because the generated fingerprint is an
 # array-valued column, which is not naturally CSV-compatible.
-treeton predict "$workdir/model.tt" \
+arvore predict "$workdir/model.ao" \
     --trust-sklearn-trees \
+    --cache "$workdir/cache" \
     --data "$workdir/candidates.csv" \
     --score tanimoto_distance \
     --output "$workdir/tanimoto.parquet"
@@ -163,4 +176,4 @@ test -s "$workdir/tanimoto.parquet" || {
 }
 
 echo
-echo "PASS: treeton CLI scorer smoke test"
+echo "PASS: arvore CLI scorer smoke test"

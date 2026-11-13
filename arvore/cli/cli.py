@@ -1,4 +1,4 @@
-"""Command-line interface for treeton."""
+"""Command-line interface for arvore."""
 
 from carabiner.cliutils import (
     CLIApp,
@@ -83,9 +83,20 @@ def main() -> None:
         default=None,
         type=str,
         help=(
-            "Registered prediction scorer. "
-            "Configured scorers can also "
-            "be supplied in the prediction JSON config."
+            "Registered scorer or name(key=value) expression; "
+            "optionally prefix output_name=. "
+            "Quote expressions in the shell. "
+            "May be combined with JSON-configured scorers."
+        ),
+    )
+
+    skip_ref_save_opt = CLIOption(
+        "--skip-ref-save",
+        action="store_true",
+        default=False,
+        help=(
+            "Do not prepare or checkpoint scorer reference resources. "
+            "The fitted model and training data are still saved."
         ),
     )
 
@@ -112,16 +123,6 @@ def main() -> None:
         ),
     )
 
-    cache_leaf_opt = CLIOption(
-        "--cache-leaf-reference",
-        action="store_true",
-        default=False,
-        help=(
-            "Precompute and checkpoint leaf-occupancy "
-            "reference counts and percentile calibration."
-        ),
-    )
-
     train = CLICommand(
         "train",
         description="Train a model from configuration.",
@@ -129,7 +130,6 @@ def main() -> None:
             input_name,
             # output_name,
             checkpoint_out.replace(required=True),
-            cache_leaf_opt,
             CLIOption(
                 "--validation",
                 "-2",
@@ -151,6 +151,7 @@ def main() -> None:
             pipeline_opt,
             set_opt,
             cache_opt,
+            skip_ref_save_opt,
         ],
         main=_train,
     )

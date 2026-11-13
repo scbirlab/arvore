@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from treeton.scorers import (
+from arvore.scorers import (
     EnsembleSD,
     Requirements,
     ScoreContext,
@@ -107,7 +107,7 @@ from types import SimpleNamespace
 
 from datasets import Dataset
 
-from treeton import Box, Ensemble
+from arvore import Box, Ensemble
 
 
 class CountingEstimator:

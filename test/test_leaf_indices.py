@@ -9,7 +9,7 @@ from sklearn.ensemble import (
 )
 from sklearn.linear_model import Ridge
 
-from treeton.models.adapters import get_adapter
+from arvore.models.adapters import get_adapter
 
 
 @pytest.fixture

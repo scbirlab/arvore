@@ -8,9 +8,9 @@ from sklearn.ensemble import (
     ExtraTreesRegressor,
 )
 
-from treeton import Box, Ensemble
-from treeton.models.adapters import save_model, load_model
-from treeton.models.ensemble import Ensemble
+from arvore import Box, Ensemble
+from arvore.models.adapters import save_model, load_model
+from arvore.models.ensemble import Ensemble
 
 TRUSTED_SKLEARN_TYPES = ("sklearn.tree._tree.Tree",)
 

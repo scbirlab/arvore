@@ -201,39 +201,58 @@ class ScoringRunner:
                 state=self.states[name],
             )
 
-            # Preserve the original scorer exception.
+            # A scorer may return its usual numeric array, or a
+            # mapping with "" for its primary score and named extras.
             values = scorer(local_context)
 
-            try:
-                values = np.asarray(
-                    values,
-                    dtype=float,
-                )
-            except (TypeError, ValueError) as error:
-                raise TypeError(
-                    f"Scorer {name!r} returned "
-                    "nonnumeric values"
-                ) from error
-
-            if values.shape == (n_samples,):
-                columns = {
-                    f"score:{name}": values,
-                }
-
-            elif values.shape == target_shape:
-                columns = {
-                    f"score:{name}:{target}": values[:, i]
-                    for i, target in enumerate(
-                        context.targets
+            if isinstance(values, Mapping):
+                if "" not in values:
+                    raise ValueError(
+                        f"Scorer {name!r} mapping lacks primary score"
                     )
-                }
-
+                outputs = values.items()
             else:
-                raise ValueError(
-                    f"Scorer {name!r} returned shape "
-                    f"{values.shape}; expected "
-                    f"({n_samples},) or {target_shape}"
-                )
+                outputs = (("", values),)
+
+            columns = {}
+            for suffix, value in outputs:
+                if not isinstance(suffix, str):
+                    raise TypeError("Scorer output suffix must be a string")
+
+                column = f"score:{name}"
+                if suffix:
+                    column += f":{suffix}"
+
+                array = np.asarray(value)
+
+                if array.dtype.kind in "US":
+                    if not suffix or array.shape != (n_samples,):
+                        raise ValueError(
+                            f"Scorer {name!r} returned invalid string shape"
+                        )
+                    columns[column] = array.tolist()
+                    continue
+
+                try:
+                    array = np.asarray(value, dtype=float)
+                except (TypeError, ValueError) as error:
+                    raise TypeError(
+                        f"Scorer {name!r} returned nonnumeric values"
+                    ) from error
+
+                if array.shape == (n_samples,):
+                    columns[column] = array
+                elif array.shape == target_shape and not suffix:
+                    columns.update({
+                        f"{column}:{target}": array[:, i]
+                        for i, target in enumerate(context.targets)
+                    })
+                else:
+                    raise ValueError(
+                        f"Scorer {name!r} returned shape "
+                        f"{array.shape}; expected ({n_samples},)"
+                        f" or {target_shape}"
+                    )
 
             collisions = set(columns) & (
                 occupied | set(output)

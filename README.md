@@ -1,37 +1,34 @@
+# 🌳 Arvore
 
-# 🌳 Treeton
+![GitHub Actions](https://img.shields.io/github/actions/workflow/status/scbirlab/arvore/python-test.yml)
+![Python versions](https://img.shields.io/pypi/pyversions/arvore)
+![PyPI](https://img.shields.io/pypi/v/arvore)
 
-![GitHub Actions](https://img.shields.io/github/actions/workflow/status/scbirlab/treeton/python-test.yml)
-![Python versions](https://img.shields.io/pypi/pyversions/treeton)
-![PyPI](https://img.shields.io/pypi/v/treeton)
+**Arvore makes tree-based machine learning simple, reproducible and shareable.**
 
-**Treeton makes it straightforward to train, evaluate, checkpoint and share machine-learning models.**
+Train random forests, XGBoost, LightGBM, CatBoost and other scikit-learn-compatible estimators through a consistent interface. Combine models into ensembles, evaluate predictions, measure uncertainty and novelty, and share complete experiments as portable checkpoints.
 
-It provides a common interface for scikit-learn-compatible estimators, including random forests, XGBoost, LightGBM and CatBoost. Models can be combined into ensembles, trained using reproducible configurations and restored with their feature preprocessing and training-data provenance.
+Arvore brings together model training, feature preprocessing, data provenance and prediction diagnostics without imposing a particular modelling workflow. Its composable scoring interface makes it straightforward to compare uncertainty measures or integrate methods from other packages.
 
-Treeton also supports **prediction diagnostics**, such as ensemble disagreement, tree-based uncertainty and distance from previously observed data.
+Use it interactively from Python or through a reproducible command-line interface, from a laptop to an HPC cluster.
 
-Use it from Python or the command line, including for experiments running on HPC systems.
-
-Treeton is in alpha development and currently focuses on numeric regression.
-
-## Features
-
-- **Train different models consistently.** Use random forests, XGBoost, LightGBM, CatBoost or other compatible estimators.
-- **Build ensembles.** Combine repeated models or different estimator types, with optional prediction weights.
-- **Save and share checkpoints.** Retain trained models, preprocessing and training-data provenance.
-- **Score predictions.** Estimate ensemble disagreement, tree variation and novelty relative to training observations.
-- **Run reproducible experiments.** Define models and preprocessing in JSON, with command-line overrides.
-- **Work with large datasets.** Use batched prediction and checkpointed datasets.
-
-Treeton uses [Aspect](https://github.com/scbirlab/aspect) for data transformations and [Providence](https://github.com/scbirlab/providence) for data loading and provenance.
+Arvore currently focuses on regression and is under active alpha development.
 
 ## Installation
 
 Python 3.11 or later is required.
 
 ```bash
-pip install treeton
+pip install arvore
+```
+
+Install optional model backends as needed:
+
+```bash
+pip install "arvore[trees]"  # XGBoost and LightGBM
+pip install "arvore[cat]"    # CatBoost
+pip install "arvore[chem]"   # Molecular fingerprints and descriptors
+pip install "arvore[bio]"    # Biological feature tools
 ```
 
 For the latest development version:
@@ -40,30 +37,11 @@ For the latest development version:
 pip install "git+https://github.com/scbirlab/treeton.git@dev"
 ```
 
-Install optional model backends or chemistry support as needed:
-
-```bash
-pip install "treeton[trees]"  # XGBoost and LightGBM
-pip install "treeton[cat]"    # CatBoost
-pip install "treeton[chem]"   # Molecular fingerprints and descriptors
-pip install "treeton[bio]"    # Biological feature tools
-```
-
 ## Quick start
 
-### 1. Prepare some data
+### Command-line interface
 
-Treeton accepts datasets in formats supported by Providence, including CSV and Parquet.
-
-For a small example:
-
-```bash
-printf 'x,y\n1,3\n2,5\n3,7\n4,9\n5,11\n6,13\n7,15\n8,17\n9,19\n10,21\n' > train.csv
-
-printf 'x\n2.5\n5.5\n8.5\n' > candidates.csv
-```
-
-### 2. Define an experiment
+Train and save a model using a simple JSON configuration.
 
 Create `experiment.json`:
 
@@ -73,13 +51,13 @@ Create `experiment.json`:
     "model": {
       "class_path": "sklearn.ensemble.RandomForestRegressor",
       "init_args": {
-        "n_estimators": 100,
+        "n_estimators": 200,
         "random_state": 42
       }
     },
-    "pipeline": {},
-    "features": ["x"],
-    "target": "y"
+    "features": ["x1", "x2"],
+    "target": "y",
+    "pipeline": {}
   },
   "fit": {
     "skip_eval": true
@@ -87,70 +65,47 @@ Create `experiment.json`:
 }
 ```
 
-The configuration defines which model to train, which columns to use and how the data should be prepared.
-
-### 3. Train and save
+Train a model from a CSV file:
 
 ```bash
-treeton train train.csv \
+arvore train train.csv \
     --config experiment.json \
-    --checkpoint model.tt
+    --checkpoint model.ao
 ```
 
-The checkpoint stores the fitted model alongside its configuration, preprocessing and training-data information.
-
-### 4. Make predictions
+Make predictions on new data:
 
 ```bash
-treeton predict model.tt \
+arvore predict model.ao \
     --trust-sklearn-trees \
     --data candidates.csv \
     --output predictions.csv
 ```
 
-The output contains the original data and a `prediction:y` column.
-
-`--trust-sklearn-trees` authorises loading scikit-learn tree objects from a checkpoint you trust.
-
-### 5. Add prediction diagnostics
+Add uncertainty and novelty diagnostics with one argument:
 
 ```bash
-treeton predict model.tt \
+arvore predict model.ao \
     --trust-sklearn-trees \
     --data candidates.csv \
-    --score tree_sd inverse_leaf_occupancy euclidean_distance \
+    --score tree_sd feature_distance \
     --output scored.csv
 ```
 
-Alongside the predictions, this adds columns such as:
+The resulting table retains the input columns and adds predictions and requested scores:
 
-- `score:tree_sd:y`
-- `score:inverse_leaf_occupancy`
-- `score:euclidean_distance`
+| x1 | x2 | prediction:y | score:tree_sd:y | score:feature_distance |
+| --- | --- | --- | --- | --- |
+| ... | ... | ... | ... | ... |
 
-These help identify predictions made with greater model disagreement or farther from the training observations.
-
-## Prediction scoring
-
-Treeton can calculate multiple uncertainty and novelty diagnostics in the same prediction run.
-
-| Scorer | What it measures |
-| --- | --- |
-| `ensemble_sd` | Disagreement between ensemble members |
-| `tree_sd` | Variation in predictions across individual trees |
-| `inverse_leaf_occupancy` | How sparsely populated the candidate's tree leaves are in the training data |
-| `euclidean_distance` | Distance to the nearest training observation in model feature space |
-| `tanimoto_distance` | Chemical fingerprint distance to the nearest training compound |
-
-Higher values generally indicate greater disagreement or novelty.
-
-These quantities have different scales and interpretations. **They are diagnostics, not automatically calibrated probabilities of error.** Some scorers also require particular model capabilities.
+The same configuration can be reused across datasets and overridden from the command line.
 
 ### Python API
 
+The equivalent workflow takes only a few lines:
+
 ```python
-from treeton import Box
-from treeton.scorers import InverseLeafOccupancy
+from arvore import Box
 
 box = Box.from_config({
     "model": {
@@ -160,7 +115,7 @@ box = Box.from_config({
             "random_state": 42
         }
     },
-    "features": ["x"],
+    "features": ["x1", "x2"],
     "target": "y",
     "pipeline": {}
 })
@@ -169,127 +124,50 @@ box.fit("train.csv", skip_eval=True)
 
 results = box.predict(
     "candidates.csv",
-    score=[
-        "tree_sd",
-        "euclidean_distance",
-        InverseLeafOccupancy(
-            normalization="reference_percentile"
-        )
-    ]
+    score=["tree_sd", "feature_distance"]
 )
+
+box.save("model.ao")
 ```
 
-Reference-percentile normalisation expresses leaf occupancy relative to the distribution observed in the training data. It can help compare novelty scores from different models.
-
-To assign custom output names, pass a dictionary:
+Restore the complete fitted experiment elsewhere:
 
 ```python
-results = box.predict(
-    "candidates.csv",
-    score={
-        "forest_variation": "tree_sd",
-        "feature_distance": "euclidean_distance",
-        "leaf_percentile": InverseLeafOccupancy(
-            normalization="reference_percentile"
-        )
-    }
+from arvore import Box
+
+box = Box.load(
+    "model.ao",
+    trusted_types=("sklearn.tree._tree.Tree",)
 )
+
+predictions = box.predict("new_data.csv")
 ```
 
-The resulting score columns use those names.
+The checkpoint preserves the trained estimator, its configuration, fitted preprocessing and training-data provenance. Prepared reference resources for uncertainty and novelty scoring can also be checkpointed and reused.
 
-### Molecular similarity
+## Models and ensembles
 
-Treeton can estimate chemical novelty using the Tanimoto distance between binary molecular fingerprints.
+Arvore supports scikit-learn-compatible estimators through a common training, prediction and persistence interface.
+
+Supported backends include:
+
+- Random forests and other scikit-learn estimators
+- XGBoost
+- LightGBM
+- CatBoost
+- Homogeneous and heterogeneous ensembles
+
+Additional estimators can be integrated through model adapters.
+
+### Ensembles
+
+Combine estimators directly through the Python API:
 
 ```python
-from treeton.scorers import TanimotoDistance
+from arvore import Ensemble
 
-results = box.predict(
-    "compounds.csv",
-    score=TanimotoDistance(
-        structure_column="smiles",
-        column="fingerprint"
-    )
-)
-```
-
-Existing fingerprints are reused when available. Otherwise, fingerprints can be generated from SMILES using Aspect and Schemist.
-
-The molecular fingerprint need not be one of the model's predictive features.
-
-Install chemistry support with:
-
-```bash
-pip install "treeton[chem]"
-```
-
-Exact nearest-reference similarity is used by default. Large reference libraries can make this calculation expensive.
-
-### Configured scoring from the CLI
-
-For parameterised scorers, create a prediction configuration such as `predict.json`:
-
-```json
-{
-  "batch_size": 128,
-  "score": {
-    "leaf_percentile": {
-      "class_path": "treeton.scorers.leaves.InverseLeafOccupancy",
-      "init_args": {
-        "normalization": "reference_percentile"
-      }
-    },
-    "feature_distance": "euclidean_distance"
-  }
-}
-```
-
-Then run:
-
-```bash
-treeton predict model.tt \
-    --trust-sklearn-trees \
-    --data candidates.csv \
-    --config predict.json \
-    --score tree_sd \
-    --output scored.parquet
-```
-
-Scorers from the configuration and command line are combined. Custom scorer classes can also be instantiated from installed packages using `class_path` and `init_args`.
-
-## Ensembles
-
-Treeton supports ensembles of repeated models and mixtures of different estimator types.
-
-### Repeated models
-
-To train an ensemble of five random forests, use this model configuration inside `experiment.json`:
-
-```json
-{
-  "kind": "ensemble",
-  "base": {
-    "class_path": "sklearn.ensemble.RandomForestRegressor",
-    "init_args": {
-      "n_estimators": 200
-    }
-  },
-  "n_members": 5,
-  "seed": 42
-}
-```
-
-Treeton constructs separately seeded members and averages their predictions.
-
-### Mixed models
-
-Different estimators can also be combined:
-
-```python
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
-from treeton import Ensemble
 
 model = Ensemble(
     {
@@ -311,83 +189,150 @@ predictions = model.predict(X_test)
 members = model.predict_members(X_test)
 ```
 
-The weights determine each member's contribution to the ensemble prediction.
+Arvore also supports ensembles of repeated estimators defined through JSON configurations.
 
-Ensembles currently share one feature representation across their members.
+Individual member predictions can be inspected alongside aggregate predictions, including through the CLI's `--disaggregate` option.
 
-### Inspect individual predictions
+## Prediction scoring
 
-Use `--disaggregate` from the CLI:
+Arvore supports composable prediction diagnostics through the `score` argument of `Box.predict()`.
 
-```bash
-treeton predict ensemble.tt \
-    --trust-sklearn-trees \
-    --data candidates.csv \
-    --score ensemble_sd \
-    --disaggregate \
-    --output predictions.parquet
-```
+Scores can quantify model disagreement, variability between trees, or distance from observations in the training dataset.
 
-This produces member-level predictions rather than only the ensemble mean. Scoring remains available independently of the output format.
+| Scorer | Description |
+| --- | --- |
+| `ensemble_sd` | Standard deviation of predictions across ensemble members |
+| `tree_sd` | Variation in predictions across individual trees |
+| `inverse_leaf_occupancy` | Sparsity of training observations in the leaves reached by a candidate |
+| `feature_distance` | Distance to nearest training observations in transformed feature space |
+| `tanimoto_distance` | Distance to training compounds using molecular fingerprints |
 
-In Python, use `model.predict_members(X)` or `box.predict(..., disaggregate=True)`.
+Scores are diagnostics with different scales and interpretations. They should not automatically be interpreted as calibrated prediction errors.
 
-## Training, evaluation and checkpoints
+### Composing scorers
 
-### Python workflow
-
-```python
-from treeton import Box
-
-box = Box.from_config({
-    "model": {
-        "class_path": "sklearn.ensemble.RandomForestRegressor",
-        "init_args": {"n_estimators": 200}
-    },
-    "features": ["x"],
-    "target": "y",
-    "pipeline": {}
-})
-
-box.fit("train.csv", skip_eval=True)
-box.save("model.tt")
-
-restored = Box.load(
-    "model.tt",
-    trusted_types=("sklearn.tree._tree.Tree",)
-)
-
-predictions = restored.predict("candidates.csv")
-```
-
-You can also evaluate trained models on held-out data:
+Request several scores in the same prediction:
 
 ```python
-predicted, metrics = box.evaluate(
-    "validation.csv",
-    metrics=["rmse", "mae", "pearson", "spearman"]
+results = box.predict(
+    "candidates.csv",
+    score=[
+        "tree_sd",
+        "feature_distance",
+        "inverse_leaf_occupancy"
+    ]
 )
 ```
 
-### Reproducible checkpoints
+Scorers can also be configured as objects:
 
-A `Box` checkpoint retains the fitted model, model configuration, fitted preprocessing and training-data provenance.
+```python
+from arvore.scorers import (
+    FeatureDistance,
+    InverseLeafOccupancy
+)
 
-Depending on the data source and checkpoint settings, training data may be stored directly or retained by reference.
+results = box.predict(
+    "candidates.csv",
+    score={
+        "nearest": FeatureDistance(n_neighbors=1),
+        "neighbourhood": FeatureDistance(n_neighbors=10),
+        "leaf_percentile": InverseLeafOccupancy(
+            normalization="reference_percentile"
+        )
+    }
+)
+```
 
-Reference-based prediction scorers depend on the original training data remaining accessible.
+Using a dictionary assigns each scorer a custom output name, allowing different configurations of the same method to be evaluated together.
 
-Treeton uses native model formats when supported and skops for scikit-learn estimators. Loading some sklearn checkpoints requires explicitly trusting their internal tree types.
+### Molecular novelty
 
-Only load checkpoints from sources you trust. Unsafe joblib serialization is available as an explicit fallback for otherwise unsupported estimators.
+Chemical novelty can be evaluated independently of the features used by a predictive model.
 
-## Advanced usage
+```python
+from arvore.scorers import TanimotoDistance
 
-### Feature transformations
+results = box.predict(
+    "compounds.csv",
+    score=TanimotoDistance(
+        structure_column="smiles",
+        column="fingerprint"
+    )
+)
+```
 
-Treeton delegates preprocessing to Aspect.
+Arvore can reuse existing molecular fingerprints or generate them from molecular structures through its preprocessing integrations.
 
-For example, a pipeline can create a transformed feature:
+### External scoring methods
+
+**Any callable accepting an Arvore `ScoreContext` can be used as a scorer.** This allows existing uncertainty estimators, distance metrics or custom diagnostics to be integrated without modifying Arvore.
+
+For example, to use a function from another package:
+
+```python
+import numpy as np
+
+from external_package import novelty_score
+
+def external_novelty(context):
+    return np.asarray(
+        novelty_score(context.X)
+    )
+
+results = box.predict(
+    "candidates.csv",
+    score={"novelty": external_novelty}
+)
+```
+
+The callable receives the transformed feature matrix and can access the fitted model, predictions, candidate data and other available context.
+
+For methods requiring training-set references, calibration data or additional model capabilities, Arvore provides a more structured scorer interface described under [Extending Arvore](#extending-arvore).
+
+### Reference-based scoring
+
+Some diagnostics require information from the fitted training dataset, such as nearest-neighbour indices, molecular fingerprints or tree-leaf occupancy distributions.
+
+Arvore prepares these resources lazily and caches them on the fitted `Box`. Repeated scoring requests reuse compatible references rather than recomputing them.
+
+```python
+box.predict(
+    candidates,
+    score="feature_distance"
+)
+
+# Reuses the same prepared training reference.
+box.predict(
+    more_candidates,
+    score="feature_distance"
+)
+```
+
+Prepared references can be retained in checkpoints:
+
+```python
+box.save(
+    "model.ao",
+    score=[
+        "feature_distance",
+        "inverse_leaf_occupancy",
+        "tanimoto_distance"
+    ]
+)
+```
+
+References are identified by deterministic specifications, allowing compatible scorers and repeated predictions to share resources.
+
+## Data and preprocessing
+
+Arvore works with datasets resolved through [Providence](https://github.com/scbirlab/providence), including CSV, Parquet and Hugging Face datasets.
+
+Feature transformations are managed through [Aspect](https://github.com/scbirlab/aspect). Preprocessing is fitted alongside the estimator and retained in its checkpoint.
+
+A `Box` specifies the input features, prediction targets, model and optional transformation pipeline.
+
+For example, a pipeline can construct a log-transformed feature:
 
 ```json
 {
@@ -397,42 +342,199 @@ For example, a pipeline can create a transformed feature:
 }
 ```
 
-The model can then select `"log_x"` in its feature configuration.
+The resulting feature can then be selected for model training.
 
-Aspect supports other numerical, categorical, chemical and biological transformations. See the [Aspect documentation](https://github.com/scbirlab/aspect).
+Arvore also supports batched predictions, making it suitable for evaluating large candidate datasets without materialising every prediction batch simultaneously.
 
-### Configuration overrides
+## Evaluation and reproducibility
 
-CLI options can override experiment configuration without editing JSON files:
-
-```bash
-treeton train train.csv \
-    --config experiment.json \
-    --checkpoint model.tt \
-    --set box.model.init_args.n_estimators=500
-```
-
-Multiple `--set` arguments are supported, including nested ensemble settings.
-
-### Custom scorers
-
-You can supply your own prediction diagnostic as a callable:
+Evaluate models against held-out data using standard regression metrics:
 
 ```python
-def custom_score(context):
-    return context.X[:, 0]
-
-results = box.predict(
-    "candidates.csv",
-    score={"my_score": custom_score}
+predictions, metrics = box.evaluate(
+    "validation.csv",
+    metrics=[
+        "rmse",
+        "mae",
+        "pearson",
+        "spearman"
+    ]
 )
 ```
 
-Scorers receive a context containing the model, predictions, candidate data and any shared inference resources they request.
+### Portable checkpoints
 
-More advanced scorers can implement preparation hooks to access training data, build reference indices or construct calibration resources once before batched prediction.
+A saved `Box` retains the information needed to recover a fitted experiment:
 
-This supports integration with third-party uncertainty and novelty methods.
+- Model configuration and fitted estimator
+- Feature definitions and fitted preprocessing
+- Training-data provenance and retained training references
+- Prepared uncertainty and novelty resources, when requested
+
+Training data may be embedded or retained by reference, depending on its source and the checkpoint settings.
+
+Model persistence uses backend-native formats where supported and skops for scikit-learn models. Some scikit-learn checkpoints require explicitly trusting internal estimator types during loading. An unsafe joblib fallback is available for otherwise unsupported estimators.
+
+Only load checkpoints from trusted sources.
+
+### Reproducible command-line experiments
+
+Configurations can be overridden without editing the original experiment definition:
+
+```bash
+arvore train train.csv \
+    --config experiment.json \
+    --checkpoint experiment.ao \
+    --set box.model.init_args.n_estimators=500
+```
+
+This makes the same experiment definition reusable across model hyperparameters, datasets and automated workflows.
+
+## Extending Arvore
+
+Arvore is designed to accommodate external estimators and prediction diagnostics with minimal integration code.
+
+### Box
+
+`Box` is the central interface for a fitted experiment.
+
+It brings together:
+
+| Component | Responsibility |
+| --- | --- |
+| Model | A fitted estimator or ensemble |
+| Features and targets | Definitions of model inputs and outputs |
+| Pipeline | Feature transformations and preprocessing |
+| Data provenance | Resolution and retention of training data |
+| Scorers | Optional uncertainty and novelty diagnostics |
+| References | Reusable training-dependent resources |
+| Checkpoint | Persistence of the complete fitted experiment |
+
+The main operations are `fit()`, `predict()`, `evaluate()`, `save()` and `load()`.
+
+Model-specific operations are delegated to adapters, keeping `Box` independent of a particular estimation library.
+
+### Writing a custom Scorer
+
+A minimal scorer only needs to be callable:
+
+```python
+import numpy as np
+
+def feature_norm(context):
+    return np.linalg.norm(context.X, axis=1)
+
+results = box.predict(
+    candidates,
+    score={"feature_norm": feature_norm}
+)
+```
+
+The `ScoreContext` provides backend-independent access to information such as:
+
+- `X`: transformed candidate features
+- `predictions`: model predictions
+- `model`: fitted model or ensemble
+- `batch`: original candidate columns
+- `targets`: prediction target names
+- `member_predictions`: optional ensemble-member predictions
+- `tree_predictions`: optional individual-tree predictions
+- `state`: scorer-specific prepared resources
+- `box`: the fitted `Box`
+
+More advanced methods can declare requirements and implement preparation hooks.
+
+For example, a scorer wrapping an external uncertainty implementation:
+
+```python
+from dataclasses import dataclass
+from typing import ClassVar
+
+from arvore.scorers import (
+    Requirements,
+    ScoreContext,
+    register_scorer
+)
+
+from external_package import ExternalUncertainty
+
+
+@register_scorer
+@dataclass(frozen=True)
+class ExternalScore:
+    name: ClassVar[str] = "external_score"
+
+    @property
+    def requirements(self):
+        return Requirements(
+            outputs=("prediction",)
+        )
+
+    def prepare(self, box, *, batch_size=1024):
+        # Construct or retrieve any resources needed
+        # by the external implementation.
+        return ExternalUncertainty(box.model)
+
+    def __call__(self, context: ScoreContext):
+        return context.state.score(context.X)
+```
+
+The scorer can then be invoked by name:
+
+```python
+results = box.predict(
+    candidates,
+    score="external_score"
+)
+```
+
+The external implementation above is illustrative; its constructor and `score()` method should be adapted to the actual library.
+
+### Scorer extension points
+
+Scorers can implement several optional hooks:
+
+| Hook | Purpose |
+| --- | --- |
+| `requirements` | Declare required candidate columns, model capabilities and prediction outputs |
+| `prepare_candidates(data, box=...)` | Generate or resolve auxiliary candidate columns |
+| `validate(box, prepared)` | Check compatibility before scoring |
+| `prepare(box, batch_size=...)` | Initialise training references, indices or calibration resources |
+| `__call__(context)` | Evaluate the scorer for a prediction batch |
+| `finalize(result, name=..., box=...)` | Inspect the completed result or issue diagnostics |
+
+Arvore validates declared requirements and supplies common inference resources, including ensemble-member predictions and individual-tree predictions, through model adapters where supported.
+
+A scorer can return one value per sample or per target. It may also return a mapping containing a primary score and additional named outputs.
+
+### Reusing reference resources
+
+Scorers that depend on training data can request reusable resources through `box.references.get_or_build()`.
+
+```python
+reference = box.references.get_or_build(
+    {
+        "type": "external_reference",
+        "version": 1,
+        "metric": "euclidean"
+    },
+    builder
+)
+```
+
+Here, `builder` is a callable that constructs the resource when it has not already been prepared.
+
+Arvore hashes the canonical resource specification to obtain a deterministic cache key. Equivalent requests reuse the same prepared resource, including across scorer instances.
+
+Reference types supporting Arvore's checkpoint persistence can be saved and restored alongside the fitted model.
+
+This enables integration with external nearest-neighbour libraries, model-specific uncertainty implementations, density estimators or calibration methods without embedding their algorithms in `Box`.
+
+### Model adapters
+
+Custom estimators can be supported through Arvore's adapter registry.
+
+Adapters handle estimator-specific fitting, prediction, model capabilities and persistence. This allows scorers to request capabilities such as individual-tree predictions without depending directly on XGBoost, LightGBM, CatBoost or scikit-learn internals.
 
 ## Development
 
@@ -444,42 +546,34 @@ cd treeton
 pip install -e ".[dev]"
 ```
 
-Run the Python tests:
+Run the test suite:
 
 ```bash
 pytest -q
-pytest --doctest-modules -q treeton
 ```
 
-Run the end-to-end CLI scorer smoke test:
+Run module doctests:
 
 ```bash
-bash test/smoke_scorers.sh
+pytest --doctest-modules -q arvore
 ```
 
-### Project components
+The project is developed using Python 3.11 and later.
 
-| Component | Responsibility |
-| --- | --- |
-| `Box` | Training, feature selection, prediction and checkpointing |
-| `Ensemble` | Model composition and prediction aggregation |
-| Model adapters | Backend-specific fitting, inference and persistence |
-| Scorers | Uncertainty and novelty diagnostics |
-| Aspect | Feature transformation |
-| Providence | Dataset resolution, provenance and checkpointing |
+### Related projects
 
-The scoring API supports optional preparation, compatibility checks and arbitrary per-invocation state. Model capabilities such as tree predictions and leaf indices are exposed through the adapter layer.
+Arvore integrates with other packages in the [scbirlab](https://github.com/scbirlab) ecosystem:
 
-The current implementation focuses on regression and exact reference-distance calculations. Future work may include approximate nearest-neighbour backends, additional uncertainty scorers and evaluation methods incorporating prediction diagnostics.
-
-## Related projects
-
-- [Providence](https://github.com/scbirlab/providence) — Data loading, provenance and checkpointing.
-- [Aspect](https://github.com/scbirlab/aspect) — Feature processing and transformation.
+- [Providence](https://github.com/scbirlab/providence) — Data resolution, provenance and checkpointing.
+- [Aspect](https://github.com/scbirlab/aspect) — Feature transformation and processing.
 - [Eluent](https://github.com/scbirlab/eluent) — Dataset grouping and splitting.
 - [Schemist](https://github.com/scbirlab/schemist) — Molecular featurisation.
 - [Vectome](https://github.com/scbirlab/vectome) — Biological feature representations.
 
-## License
+### Issues, problems, suggestions
 
-MIT. See [LICENSE](https://github.com/scbirlab/treeton/blob/main/LICENSE).
+Please report bugs, feature requests and suggestions through the [GitHub issue tracker](https://github.com/scbirlab/arvore/issues).
+
+### License
+
+MIT. See [LICENSE](https://github.com/scbirlab/arvore/blob/main/LICENSE).

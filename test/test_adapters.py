@@ -8,7 +8,7 @@ import pytest
 from sklearn.datasets import make_regression
 from sklearn.ensemble import RandomForestRegressor
 
-from treeton.models.adapters import (
+from arvore.models.adapters import (
     ADAPTERS,
     get_adapter,
     get_adapter_by_name,

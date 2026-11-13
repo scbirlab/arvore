@@ -7,9 +7,9 @@ import pytest
 from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 
-from treeton import Box, Ensemble
-from treeton.scorers import TanimotoDistance
-from treeton.scorers.tanimoto import TanimotoReference
+from arvore import Box, Ensemble
+from arvore.scorers import TanimotoDistance
+from arvore.scorers.tanimoto import TanimotoReference
 
 
 def brute_force_distance(queries, references):
@@ -147,7 +147,7 @@ def test_tanimoto_box(example):
     result = box.predict(
         score=[
             "tanimoto_distance",
-            "euclidean_distance",
+            "feature_distance",
         ],
         batch_size=5,
         map_kwargs={"load_from_cache_file": False},
@@ -162,7 +162,7 @@ def test_tanimoto_box(example):
         expected,
     )
 
-    assert "score:euclidean_distance" in result.column_names
+    assert "score:feature_distance" in result.column_names
 
     np.testing.assert_allclose(
         result["prediction:y"],

@@ -7,9 +7,9 @@ import pytest
 from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 
-from treeton import Box, Ensemble
-from treeton.scorers import EuclideanDistance
-from treeton.scorers.distances import EuclideanReference
+from arvore import Box, Ensemble
+from arvore.scorers import FeatureDistance
+from arvore.scorers.distances import FeatureReference
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ def test_reference_matches_brute_force():
     X_train = rng.normal(size=(35, 5))
     X_test = rng.normal(size=(11, 5))
 
-    reference = EuclideanReference.build(X_train)
+    reference = FeatureReference.build(X_train)
 
     expected = np.linalg.norm(
         X_test[:, None, :] - X_train[None, :, :],
@@ -75,7 +75,7 @@ def test_euclidean_box_scoring(example):
     box, X_train, X_test, model = example
 
     result = box.predict(
-        score="euclidean_distance",
+        score="feature_distance",
         batch_size=6,
         map_kwargs={"load_from_cache_file": False},
     )
@@ -86,7 +86,7 @@ def test_euclidean_box_scoring(example):
     ).min(axis=1)
 
     np.testing.assert_allclose(
-        result["score:euclidean_distance"],
+        result["score:feature_distance"],
         expected,
         atol=1e-7,
     )
@@ -100,7 +100,7 @@ def test_euclidean_box_scoring(example):
 def test_training_rows_have_zero_distance(example):
     box, X_train, _, _ = example
 
-    index = EuclideanDistance().prepare(box, batch_size=7)
+    index = FeatureDistance().prepare(box, batch_size=7)
 
     np.testing.assert_allclose(
         index.distance(X_train),
@@ -114,7 +114,7 @@ def test_euclidean_batch_independence(example):
 
     results = [
         box.predict(
-            score=EuclideanDistance(),
+            score=FeatureDistance(),
             batch_size=batch_size,
             map_kwargs={"load_from_cache_file": False},
         )
@@ -122,8 +122,8 @@ def test_euclidean_batch_independence(example):
     ]
 
     np.testing.assert_allclose(
-        results[0]["score:euclidean_distance"],
-        results[1]["score:euclidean_distance"],
+        results[0]["score:feature_distance"],
+        results[1]["score:feature_distance"],
     )
 
 
@@ -139,7 +139,7 @@ def test_euclidean_and_leaf_scoring(example):
 
     result = box.predict(
         score=[
-            "euclidean_distance",
+            "feature_distance",
             "inverse_leaf_occupancy",
             "ensemble_sd",
             "tree_sd",
@@ -149,7 +149,7 @@ def test_euclidean_and_leaf_scoring(example):
         map_kwargs={"load_from_cache_file": False},
     )
 
-    assert "score:euclidean_distance" in result.column_names
+    assert "score:feature_distance" in result.column_names
     assert "score:inverse_leaf_occupancy" in result.column_names
     assert "score:ensemble_sd:y" in result.column_names
     assert "score:tree_sd:y" in result.column_names
@@ -160,13 +160,13 @@ def test_euclidean_and_leaf_scoring(example):
 
 def test_invalid_reference_features():
     with pytest.raises(ValueError, match="finite"):
-        EuclideanReference.build(
+        FeatureReference.build(
             [[0.0, float("nan")]]
         )
 
 
 def test_invalid_candidate_dimension():
-    reference = EuclideanReference.build(
+    reference = FeatureReference.build(
         np.zeros((3, 4))
     )
 
