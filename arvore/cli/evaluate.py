@@ -71,10 +71,18 @@ def _evaluate(args: Namespace) -> None:
             f"Cannot serialize {type(value).__name__}"
         )
 
+    def serializable(value):
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        if isinstance(value, list):
+            return [serializable(item) for item in value]
+        return value
+
     output = json.dumps(
-        scores,
-        indent=2,
-        default=serializable,
+        {name: serializable(value) for name, value in scores.items()},
+        indent=4,
         allow_nan=False,
     )
 
