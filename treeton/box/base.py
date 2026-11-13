@@ -413,8 +413,7 @@ class Box:
             )
 
         config = {
-            "schema_version": self.SCHEMA_VERSION,
-            "model_config": self.model_config,
+            "model": self.model_config,
             "pipeline": self.pipeline.to_config(),
             "features": list(self.features),
             "target": list(self.target),
@@ -484,8 +483,6 @@ class Box:
                 self.model, staging, allow_unsafe=allow_unsafe,
             )
             config = self.to_config()
-            if isinstance(self.model, Ensemble):
-                config["model_config"] = None
             manifest = {
                 "schema_version": self.SCHEMA_VERSION,
                 "config": config,
@@ -578,7 +575,7 @@ class Box:
             pipeline=pipeline,
             features=config["features"],
             target=config["target"],
-            model_config=config.get("model_config"),
+            model_config=config.get("model"),
         )
 
         from ..scorers.persistence import load_references

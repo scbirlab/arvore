@@ -173,3 +173,54 @@ def resolve_experiment_config(
         resolved,
         overrides,
     )
+
+
+
+def load_training_config(source):
+    """Load a training experiment or reconstruct one from a Box checkpoint.
+
+    Accepted inputs:
+      * Experiment config with a 'box' section
+      * Checkpoint directory containing config.json
+      * Checkpoint manifest JSON
+      * Standalone Box.to_config() JSON
+      * Equivalent mappings
+
+    Checkpoint-derived configs intentionally contain only 'box':
+    fit/save options are not inferred from prior training runs.
+    """
+    from providence.io import load_json
+
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        if path.is_dir():
+            path = path / "config.json"
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        source = load_json(str(path))
+
+    if not isinstance(source, Mapping):
+        raise TypeError("Training configuration must be a mapping")
+
+    source = deepcopy(dict(source))
+
+    if "box" in source:
+        if not isinstance(source["box"], Mapping):
+            raise TypeError("Experiment 'box' must be a mapping")
+        return source
+
+    # Checkpoint manifest: extract only its construction recipe.
+    if "artefacts" in source and "config" in source:
+        box = source["config"]
+        if not isinstance(box, Mapping):
+            raise ValueError("Checkpoint has no Box construction config")
+        return {"box": deepcopy(dict(box))}
+
+    # Standalone Box.to_config().
+    if all(key in source for key in ("model", "features", "target")):
+        return {"box": source}
+
+    raise ValueError(
+        "Expected an experiment config, a Box construction config, "
+        "or a Treeton checkpoint manifest"
+    )

@@ -5,14 +5,16 @@ from argparse import Namespace
 from carabiner.cliutils import clicommand
 
 from ..box import Box
-from ..config.instantiate import resolve_experiment_config
+from ..config.instantiate import (
+    load_training_config,
+    resolve_experiment_config,
+)
 
 
 @clicommand(message="Training model")
 def _train(args: Namespace) -> None:
-    from providence.io import load_json
     config = resolve_experiment_config(
-        load_json(args.config),
+        load_training_config(args.config),
         model=args.model,
         overrides=args.set,
     )
@@ -26,6 +28,13 @@ def _train(args: Namespace) -> None:
     
     if args.pipeline is not None:
         box_config["pipeline"] = args.pipeline
+
+    if box_config.get("model") is None:
+        raise ValueError(
+            "This checkpoint has no reconstructible model configuration. "
+            "Supply --model or --set box.model=... to retrain."
+        )
+
     box = Box.from_config(
         box_config,
         cache_dir=args.cache,

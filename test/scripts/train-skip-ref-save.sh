@@ -4,12 +4,13 @@ set -euox pipefail
 script_dir=$(readlink -f $(dirname "$0"))
 OUTPUT_DIR=$(readlink -f "$script_dir"/..)/outputs/no-refs
 
-bash "$script_dir"/train-scorers.sh
+bash "$script_dir"/train-scorers.sh "$OUTPUT_DIR"
 
 workdir="$OUTPUT_DIR"
 
 treeton train "$workdir/train.csv" \
     --config "$workdir/experiment.json" \
+    --cache "$workdir/cache" \
     --checkpoint "$workdir/model-no-refs.tt" \
     --skip-ref-save
 
@@ -29,6 +30,7 @@ print("PASS: CLI omitted references but retained training data")
 
 treeton predict "$workdir/model-no-refs.tt" \
     --trust-sklearn-trees \
+    --cache "$workdir/cache" \
     --data "$workdir/candidates.csv" \
     --score 'feature(n_neighbors=2,return_var=True)' \
     --output "$workdir/predictions-no-refs.csv"
