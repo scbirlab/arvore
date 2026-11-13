@@ -1,6 +1,6 @@
 [project]
 name = "arvore"
-version = "0.0.5"
+version = "0.0.6"
 authors = [
   { name="Eachan Johnson", email="eachan.johnson@crick.ac.uk" },
 ]
@@ -57,8 +57,8 @@ trees = ["arvore[xgb,lgbm]"]
 dev = ["arvore[chem,bio,trees]", "pytest>=7.4", "flake8"]
 
 [project.urls]
-"Homepage" = "https://__PRESERVE_ARVORE_REPO_URL__"
-"Bug Tracker" = "https://__PRESERVE_ARVORE_REPO_URL__/issues"
+"Homepage" = https://github.com/scbirlab/arvore"
+"Bug Tracker" = "https://github.com/scbirlab/arvore/issues"
 
 [project.scripts] 
 arvore = "arvore.cli.cli:main"

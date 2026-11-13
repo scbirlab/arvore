@@ -201,7 +201,7 @@ def main() -> None:
             CLIOption(
                 "--metrics",
                 nargs="*",
-                default="rmsd",
+                default=None,
                 help="Regression metrics to calculate.",
             ),
             CLIOption(

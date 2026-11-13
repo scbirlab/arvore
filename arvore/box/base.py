@@ -26,6 +26,34 @@ DEFAULT_BATCH_SIZE: int = 1024
 DEFAULT_PREDICTION_COLUMN: str = "prediction"
 
 
+def _is_dataset(data):
+    from datasets import Dataset
+    return isinstance(data, Dataset)
+
+
+def _pipeline_identity(pipeline):
+    """Fitted preprocessing identity from its config, never its data."""
+    from datasets.fingerprint import Hasher
+
+    if pipeline is None:
+        return None
+    if callable(getattr(pipeline, "to_config", None)):
+        return pipeline.to_config()
+    return Hasher.hash(pipeline)
+
+
+def _data_identity(data):
+    """Content checksum of retained data, independent of storage layout."""
+    from pandas import DataFrame
+    from providence.io import dataframe_checksum
+
+    if data is None:
+        return None
+    if _is_dataset(data):
+        return dataframe_checksum(data.with_format(None).to_pandas())
+    return dataframe_checksum(DataFrame(dict(data)))
+
+
 def _json_copy(
     value: Mapping[Any, ...],
 ) -> dict[str, ...]:
@@ -68,6 +96,8 @@ def _resolve_metrics(
 ):
     if metrics is None:
         metrics = DEFAULT_METRICS
+    if isinstance(metrics, str):
+        metrics = [metrics]
     if isinstance(metrics, (tuple, list)):
         new_metrics = {}
         for m in metrics:
@@ -81,7 +111,9 @@ def _resolve_metrics(
     elif isinstance(metrics, Mapping):
         new_metrics = dict(metrics)
     else:
-        raise TypeError(f"Metrics must be mapping or list, but was {type(m)}: {m}")
+        raise TypeError(
+            f"Metrics must be mapping or list, but was {type(metrics)}: {metrics}"
+        )
     _metrics = {}
     for k, v in new_metrics.items():
         if isinstance(v, str):
@@ -307,6 +339,8 @@ class Box:
             self._model_config_fallback = _json_copy(model_config)
         self._validation_score = None
         self._references = None
+        self._fingerprint = None
+        self._model_digest_cache = None
 
     @property
     def references(self):
@@ -319,6 +353,68 @@ class Box:
         if getattr(self, "_references", None) is None:
             self._references = ReferenceCache()
         return self._references
+
+    @property
+    def fingerprint(self) -> str:
+        """Deterministic identity of the fitted Box.
+
+        Built from content digests of the fitted model (via its adapter),
+        the preprocessing config, features, targets and the retained
+        training data. Stable across save and load. Computed once per
+        fit or load.
+        """
+        if getattr(self, "_fingerprint", None) is None:
+            from datasets.fingerprint import Hasher
+            from aspect import __version__ as aspect_version
+            from .. import __version__
+
+            self._fingerprint = Hasher.hash({
+                "arvore": __version__,
+                "aspect": aspect_version,
+                "model": self._model_digest(),
+                "pipeline": _pipeline_identity(
+                    getattr(self, "pipeline", None)
+                ),
+                "features": list(self.features),
+                "target": list(self.target),
+                "training": self._training_digest(),
+            })
+        return self._fingerprint
+
+    def _model_digest(self) -> str:
+        """Content digest of the fitted model, stable across save and load.
+
+        Estimators without a safe codec fall back to an in-process hash,
+        which is not stable across load.
+        """
+        if getattr(self, "_model_digest_cache", None) is None:
+            from ..models.adapters import model_digest
+
+            try:
+                digest = model_digest(self.model)
+            except TypeError:
+                from datasets.fingerprint import Hasher
+                digest = "in-process:" + Hasher.hash(self.model)
+            self._model_digest_cache = digest
+        return self._model_digest_cache
+
+    def _training_digest(self) -> str | None:
+        try:
+            training = self._training_reference()
+        except (AttributeError, ValueError):
+            return None
+        return _data_identity(training)
+
+    def _map_fingerprint(self, dataset, operation, **params):
+        """Fingerprint for one Box operation over one input Dataset."""
+        from datasets.fingerprint import Hasher
+        return Hasher.hash({
+            "input": dataset._fingerprint,
+            "operation": operation,
+            "function": Hasher.hash(_predict_map_batch),
+            "box": self.fingerprint,
+            **params,
+        })
 
     @property
     def model_config(self):
@@ -626,6 +722,8 @@ class Box:
         """Fit the model using raw training and optional validation and test data."""
         from ..models import get_adapter
         self.references.clear()
+        self._fingerprint = None
+        self._model_digest_cache = None
 
         training_data, pipeline = self.featurize(
             data, 
@@ -724,7 +822,7 @@ class Box:
                 "Reference scoring requires training data "
                 "in the Aspect pipeline"
             )
-        data = self._unwrap(self.pipeline.data_out)
+        data = self._unwrap(data)
         return (
             data.with_format(None)
             if hasattr(data, "with_format")
@@ -780,6 +878,18 @@ class Box:
             scoring.validate(prepared)
             scoring.prepare(batch_size=batch_size)
 
+        if _is_dataset(prepared):
+            map_kwargs.setdefault(
+                "new_fingerprint",
+                self._map_fingerprint(
+                    prepared,
+                    "predict",
+                    pipeline=_pipeline_identity(pipeline),
+                    prediction_column=prediction_column,
+                    kwargs=kwargs,
+                    scorers=scoring.scorers if scoring else None,
+                ),
+            )
         result = prepared.map(
             _predict_map_batch,
             batched=True,
@@ -827,7 +937,16 @@ class Box:
 
         if metric_mask is not None:
             prepared = prepared.filter(metric_mask)
-
+        if _is_dataset(prepared):
+            map_kwargs.setdefault(
+                "new_fingerprint",
+                self._map_fingerprint(
+                    prepared,
+                    "evaluate",
+                    pipeline=_pipeline_identity(working_pipeline),
+                    prediction_column=prediction_column,
+                ),
+            )
         predicted = prepared.map(
             _predict_map_batch,
             batched=True,

@@ -108,6 +108,63 @@ def _normalize_leaf_indices(values, n_samples):
     return leaves.astype(np.int64, copy=False)
 
 
+def _array_digest(array) -> str:
+    """SHA-256 of array values, ignoring struct padding and layout."""
+    import numpy as np
+
+    digest = sha256(repr((
+        array.dtype.descr if array.dtype.names else array.dtype.str,
+        array.shape,
+    )).encode("utf-8"))
+    for field in array.dtype.names or (None,):
+        values = array if field is None else array[field]
+        digest.update(np.ascontiguousarray(values).tobytes())
+    return digest.hexdigest()
+
+
+def _skops_digest(raw: bytes) -> str:
+    """Content identity of a skops archive, stable across save and load.
+
+    skops archives aren't byte-reproducible: entries are named by id(),
+    timestamped, and tree arrays carry uninitialized struct padding.
+    Hash the schema without ids, and arrays field by field.
+    """
+    import io
+    import json
+    import zipfile
+
+    import numpy as np
+
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+
+        def canonical(node):
+            if isinstance(node, list):
+                return [canonical(item) for item in node]
+            if not isinstance(node, dict):
+                return node
+            out = {}
+            for key, value in node.items():
+                if key == "__id__":
+                    continue
+                if key == "file" and node.get("type") == "numpy":
+                    array = np.load(
+                        io.BytesIO(archive.read(value)),
+                        allow_pickle=False,
+                    )
+                    out[key] = _array_digest(array)
+                elif key == "file":
+                    out[key] = sha256(archive.read(value)).hexdigest()
+                else:
+                    out[key] = canonical(value)
+            return out
+
+        schema = canonical(json.loads(archive.read("schema.json")))
+
+    return sha256(json.dumps(
+        schema, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
 @register_adapter(name="skops")
 class SklearnAdapter:
 
@@ -437,9 +494,6 @@ class LightGBMAdapter(SklearnAdapter):
                 )
             )
 
-        if validation is not None:
-            kw["eval_set"] = [validation]
-
         if callbacks:
             kw["callbacks"] = callbacks
 
@@ -661,6 +715,37 @@ def save_model(
         ),
         trainable=trainable,
     ).to_dict()
+
+
+def model_digest(model) -> str:
+    """Content identity of a fitted model, stable across save and load.
+
+    skops models get a canonical content digest; other backends the
+    SHA-256 of their native serialization. Raises TypeError for
+    estimators without a safe codec.
+    """
+    import json
+    import tempfile
+    from .ensemble import Ensemble
+
+    if isinstance(model, Ensemble):
+        return sha256(json.dumps({
+            "weights": [float(w) for w in model.weights],
+            "members": {
+                name: model_digest(member)
+                for name, member in model.members.items()
+            },
+        }, sort_keys=True).encode("utf-8")).hexdigest()
+
+    adapter = get_serialization_adapter(model, allow_unsafe=False)
+    if adapter.name == "skops":
+        import skops.io as sio
+        return _skops_digest(sio.dumps(model))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / adapter.filename
+        adapter.save(model, path)
+        return sha256(path.read_bytes()).hexdigest()
 
 
 def load_model(
