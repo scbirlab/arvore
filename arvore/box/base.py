@@ -26,8 +26,6 @@ DEFAULT_BATCH_SIZE: int = 1024
 DEFAULT_PREDICTION_COLUMN: str = "prediction"
 
 
-
-
 def _is_dataset(data):
     from datasets import Dataset
     return isinstance(data, Dataset)
@@ -98,6 +96,8 @@ def _resolve_metrics(
 ):
     if metrics is None:
         metrics = DEFAULT_METRICS
+    if isinstance(metrics, str):
+        metrics = [metrics]
     if isinstance(metrics, (tuple, list)):
         new_metrics = {}
         for m in metrics:
@@ -111,7 +111,9 @@ def _resolve_metrics(
     elif isinstance(metrics, Mapping):
         new_metrics = dict(metrics)
     else:
-        raise TypeError(f"Metrics must be mapping or list, but was {type(m)}: {m}")
+        raise TypeError(
+            f"Metrics must be mapping or list, but was {type(metrics)}: {metrics}"
+        )
     _metrics = {}
     for k, v in new_metrics.items():
         if isinstance(v, str):

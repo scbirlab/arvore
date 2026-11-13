@@ -494,9 +494,6 @@ class LightGBMAdapter(SklearnAdapter):
                 )
             )
 
-        if validation is not None:
-            kw["eval_set"] = [validation]
-
         if callbacks:
             kw["callbacks"] = callbacks
 
