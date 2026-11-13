@@ -98,6 +98,97 @@ class LeafReference:
         return (left + right) / (2.0 * len(reference))
 
 
+def _encode_leaf(value, calibrated):
+    if not isinstance(value, tuple) or not value:
+        raise ValueError("Leaf reference must be a nonempty tuple")
+    arrays = {"n_members": np.array(len(value), dtype=np.int64)}
+    for i, ref in enumerate(value):
+        if not isinstance(ref, LeafReference) or not ref.ids:
+            raise ValueError("Invalid leaf reference")
+        lengths = [len(ids) for ids in ref.ids]
+        offsets = np.empty(len(lengths) + 1, dtype=np.int64)
+        offsets[0] = 0
+        offsets[1:] = np.cumsum(lengths)
+        arrays[f"offsets_{i}"] = offsets
+        arrays[f"ids_{i}"] = np.concatenate(ref.ids).astype(np.int64)
+        arrays[f"counts_{i}"] = np.concatenate(ref.counts).astype(np.int64)
+        arrays[f"n_reference_{i}"] = np.array(ref.n_reference, dtype=np.int64)
+        if calibrated:
+            if ref.calibration_scores is None:
+                raise ValueError("Missing leaf calibration scores")
+            arrays[f"calibration_{i}"] = np.asarray(
+                ref.calibration_scores, dtype=np.float64
+            )
+        elif ref.calibration_scores is not None:
+            raise ValueError("Raw leaf-count reference contains calibration")
+    return arrays
+
+
+def _decode_leaf(archive, calibrated):
+    n_members = int(archive["n_members"])
+    if n_members < 1:
+        raise ValueError("Invalid leaf reference member count")
+    references = []
+    for i in range(n_members):
+        offsets = np.asarray(archive[f"offsets_{i}"])
+        ids = np.asarray(archive[f"ids_{i}"])
+        counts = np.asarray(archive[f"counts_{i}"])
+        n_reference = int(archive[f"n_reference_{i}"])
+        if (
+            offsets.ndim != 1 or not np.issubdtype(offsets.dtype, np.integer)
+            or len(offsets) < 2 or offsets[0] != 0
+            or np.any(np.diff(offsets) <= 0)
+            or ids.ndim != 1 or counts.ndim != 1
+            or not np.issubdtype(ids.dtype, np.integer)
+            or not np.issubdtype(counts.dtype, np.integer)
+            or int(offsets[-1]) != len(ids) or len(ids) != len(counts)
+            or n_reference < 1
+        ):
+            raise ValueError("Invalid saved leaf-reference arrays")
+        tree_ids = tuple(
+            np.asarray(ids[a:b], dtype=np.int64).copy()
+            for a, b in zip(offsets[:-1], offsets[1:])
+        )
+        tree_counts = tuple(
+            np.asarray(counts[a:b], dtype=np.int64).copy()
+            for a, b in zip(offsets[:-1], offsets[1:])
+        )
+        for one_ids, one_counts in zip(tree_ids, tree_counts):
+            if (
+                np.any(np.diff(one_ids) <= 0)
+                or np.any(one_counts <= 0)
+                or int(one_counts.sum()) != n_reference
+            ):
+                raise ValueError("Invalid saved leaf occupancy counts")
+        ref = LeafReference(tree_ids, tree_counts, n_reference)
+        if calibrated:
+            scores = np.asarray(archive[f"calibration_{i}"], dtype=float)
+            if scores.shape != (n_reference,) or not np.all(np.isfinite(scores)):
+                raise ValueError("Invalid saved leaf calibration")
+            if np.any(np.diff(scores) < 0):
+                raise ValueError("Leaf calibration scores must be sorted")
+            ref = ref.with_calibration(scores)
+        references.append(ref)
+    return tuple(references)
+
+
+
+class LeafReferences(tuple):
+    """Immutable collection of per-member leaf references."""
+
+    def state_dict(self):
+        calibrated = all(
+            ref.calibration_scores is not None
+            for ref in self
+        )
+        return _encode_leaf(tuple(self), calibrated)
+
+    @classmethod
+    def from_state_dict(cls, state, spec):
+        calibrated = spec["type"] == "leaf_percentile"
+        return cls(_decode_leaf(state, calibrated))
+
+
 class LeafReferenceBuilder:
     """Accumulate reference leaf counts incrementally."""
 
@@ -188,76 +279,53 @@ class InverseLeafOccupancy:
     )
 
     def prepare(self, box, *, batch_size=1024):
-        """Reuse cached leaf counts and percentile calibration."""
+        """Prepare shared reference resources once per fitted Box."""
         from ..models.adapters import get_adapter
         from ..models.ensemble import Ensemble
-        from .cache import get_score_cache
         from .reference import feature_batches
-
-        cache = get_score_cache(box)
 
         models = (
             tuple(box.model.members.values())
             if isinstance(box.model, Ensemble)
             else (box.model,)
         )
+        counts_spec = {"type": "leaf_counts", "version": 1}
 
-        references = cache["leaf_reference"]
-
-        if references is None:
-            builders = [
-                LeafReferenceBuilder()
-                for _ in models
-            ]
-
-            for X in feature_batches(
-                box, batch_size=batch_size
-            ):
+        def build_counts():
+            builders = [LeafReferenceBuilder() for _ in models]
+            for X in feature_batches(box, batch_size=batch_size):
                 for model, builder in zip(models, builders):
-                    leaves = get_adapter(model).leaf_indices(
-                        model, X
-                    )
+                    leaves = get_adapter(model).leaf_indices(model, X)
                     builder.update(leaves)
+            return LeafReferences(builder.finish() for builder in builders)
 
-            references = tuple(
-                builder.finish()
-                for builder in builders
-            )
-            cache["leaf_reference"] = references
-
+        references = box.references.get_or_build(
+            counts_spec, build_counts
+        )
         if self.normalization == "raw":
             return references
 
-        calibrated = cache["leaf_percentile"]
-
-        if calibrated is None:
+        def build_calibration():
             scores = [[] for _ in models]
-
-            for X in feature_batches(
-                box, batch_size=batch_size
-            ):
+            for X in feature_batches(box, batch_size=batch_size):
                 for i, (model, reference) in enumerate(
                     zip(models, references)
                 ):
-                    leaves = get_adapter(model).leaf_indices(
-                        model, X
-                    )
-                    scores[i].append(
-                        reference.inverse_score(leaves)
-                    )
-
-            calibrated = tuple(
-                reference.with_calibration(
-                    np.concatenate(parts)
-                )
-                for reference, parts in zip(
-                    references, scores
-                )
+                    leaves = get_adapter(model).leaf_indices(model, X)
+                    scores[i].append(reference.inverse_score(leaves))
+            return LeafReferences(
+                reference.with_calibration(np.concatenate(parts))
+                for reference, parts in zip(references, scores)
             )
 
-            cache["leaf_percentile"] = calibrated
-
-        return calibrated
+        return box.references.get_or_build(
+            {
+                "type": "leaf_percentile",
+                "version": 1,
+                "calibration": "empirical_midrank_v1",
+            },
+            build_calibration
+        )
 
     def __call__(self, context: ScoreContext) -> NDArray:
         leaves = context.resources.get("leaf_indices")

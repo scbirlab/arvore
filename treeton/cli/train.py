@@ -5,14 +5,16 @@ from argparse import Namespace
 from carabiner.cliutils import clicommand
 
 from ..box import Box
-from ..config.instantiate import resolve_experiment_config
+from ..config.instantiate import (
+    load_training_config,
+    resolve_experiment_config,
+)
 
 
 @clicommand(message="Training model")
 def _train(args: Namespace) -> None:
-    from providence.io import load_json
     config = resolve_experiment_config(
-        load_json(args.config),
+        load_training_config(args.config),
         model=args.model,
         overrides=args.set,
     )
@@ -26,6 +28,13 @@ def _train(args: Namespace) -> None:
     
     if args.pipeline is not None:
         box_config["pipeline"] = args.pipeline
+
+    if box_config.get("model") is None:
+        raise ValueError(
+            "This checkpoint has no reconstructible model configuration. "
+            "Supply --model or --set box.model=... to retrain."
+        )
+
     box = Box.from_config(
         box_config,
         cache_dir=args.cache,
@@ -35,21 +44,25 @@ def _train(args: Namespace) -> None:
         validation=args.validation,
         **config.get("fit", {}),
     )
-    if args.cache_leaf_reference:
-        from ..scorers import InverseLeafOccupancy
-        from ..box.base import DEFAULT_BATCH_SIZE
+    # Train-config save.score uses the same declarative scorer syntax as
+    # prediction config; Box.save accepts the resolved scorer instances.
+    from .scoring import resolve_cli_scores
+    save_kwargs = dict(config.get("save", {}))
 
-        InverseLeafOccupancy(
-            normalization="reference_percentile"
-        ).prepare(
-            box,
-            batch_size=config.get(
-                "batch_size",
-                DEFAULT_BATCH_SIZE,
-            ),
-        )
+    if args.skip_ref_save:
+        # The CLI opt-out overrides save.save_references in JSON.
+        # No need to instantiate or prepare configured scorers.
+        save_kwargs.pop("score", None)
+        save_kwargs["save_references"] = False
 
-    box.save(
-        args.checkpoint,
-        **config.get("save", {}),
-    )
+    elif save_kwargs.get("save_references", True):
+        if "score" in save_kwargs:
+            save_kwargs["score"] = resolve_cli_scores(
+                config=save_kwargs["score"],
+            )
+
+    else:
+        # Declarative opt-out has the same semantics as the CLI flag.
+        save_kwargs.pop("score", None)
+
+    box.save(args.checkpoint, **save_kwargs)

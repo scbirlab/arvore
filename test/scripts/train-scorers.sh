@@ -17,7 +17,9 @@ command -v treeton >/dev/null || {
     exit 1
 }
 script_dir=$(readlink -f $(dirname "$0"))
-workdir=$(readlink -f "$script_dir"/..)/outputs/hash
+OUTPUT_DIR=$(readlink -f "$script_dir"/..)/outputs/scorers
+workdir=${1:-"$OUTPUT_DIR"}
+mkdir -p "$workdir"
 
 echo "[1/5] Creating datasets and configuration"
 
@@ -75,6 +77,15 @@ cat > "$workdir/experiment.json" <<'JSON'
   },
   "fit": {
     "skip_eval": true
+  },
+  "save": {
+    "score": {
+      "leaf_percentile": {
+        "class_path": "treeton.scorers.leaves.InverseLeafOccupancy",
+        "init_args": {"normalization": "reference_percentile"}
+      },
+      "feature_distance": "feature_distance"
+    }
   }
 }
 JSON
@@ -97,7 +108,7 @@ echo "[2/5] Training and saving ensemble"
 
 treeton train "$workdir/train.csv" \
     --config "$workdir/experiment.json" \
-    --cache-leaf-reference \
+    --cache "$workdir/cache" \
     --checkpoint "$workdir/model.tt"
 
 test -d "$workdir/model.tt" || {
@@ -111,7 +122,8 @@ treeton predict "$workdir/model.tt" \
     --trust-sklearn-trees \
     --data "$workdir/candidates.csv" \
     --config "$workdir/predict.json" \
-    --score ensemble_sd tree_sd inverse_leaf_occupancy euclidean_distance \
+    --cache "$workdir/cache" \
+    --score ensemble_sd tree_sd inverse_leaf_occupancy feature_distance \
     --disaggregate \
     --output "$workdir/predictions.csv"
 
@@ -129,7 +141,7 @@ for column in \
     "score:ensemble_sd:y" \
     "score:tree_sd:y" \
     "score:inverse_leaf_occupancy" \
-    "score:euclidean_distance" \
+    "score:feature_distance" \
     "score:leaf_percentile"
 do
     if [[ "$header" != *"$column"* ]]; then
@@ -153,6 +165,7 @@ echo "[5/5] Testing Tanimoto SMILES fingerprint generation"
 # array-valued column, which is not naturally CSV-compatible.
 treeton predict "$workdir/model.tt" \
     --trust-sklearn-trees \
+    --cache "$workdir/cache" \
     --data "$workdir/candidates.csv" \
     --score tanimoto_distance \
     --output "$workdir/tanimoto.parquet"

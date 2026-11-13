@@ -203,7 +203,7 @@ def test_box_model_config_delegation():
     )
 
     assert box.model_config == config
-    assert box.to_config()["model_config"] == config
+    assert box.to_config()["model"] == config
 
     # No duplicated configuration in Box.
     assert box._model_config_fallback is None

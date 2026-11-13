@@ -1,0 +1,19 @@
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m11[m[36m:[mfrom treeton.scorers import [1;31mEuclideanDistance[m
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m12[m[36m:[mfrom treeton.scorers.distances import [1;31mEuclideanReference[m
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m60[m[36m:[m    reference = [1;31mEuclideanReference[m.build(X_train)
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m78[m[36m:[m        score="[1;31meuclidean_distance[m",
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m89[m[36m:[m        result["score:[1;31meuclidean_distance[m"],
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m103[m[36m:[m    index = [1;31mEuclideanDistance[m().prepare(box, batch_size=7)
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m117[m[36m:[m            score=[1;31mEuclideanDistance[m(),
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m125[m[36m:[m        results[0]["score:[1;31meuclidean_distance[m"],
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m126[m[36m:[m        results[1]["score:[1;31meuclidean_distance[m"],
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m142[m[36m:[m            "[1;31meuclidean_distance[m",
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m152[m[36m:[m    assert "score:[1;31meuclidean_distance[m" in result.column_names
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m163[m[36m:[m        [1;31mEuclideanReference[m.build(
+[35mtest/test_euclidean_distance.py[m[36m:[m[32m169[m[36m:[m    reference = [1;31mEuclideanReference[m.build(
+[35mtest/test_scorer_architecture.py[m[36m:[m[32m13[m[36m:[m    [1;31mEuclideanDistance[m,
+[35mtest/test_scorer_architecture.py[m[36m:[m[32m147[m[36m:[m                "[1;31meuclidean_distance[m",
+[35mtest/test_scorer_architecture.py[m[36m:[m[32m170[m[36m:[m        assert "score:[1;31meuclidean_distance[m" in scored.column_names
+[35mtest/test_scorer_architecture.py[m[36m:[m[32m240[m[36m:[m    euclidean = [1;31mEuclideanDistance[m().prepare(
+[35mtest/test_tanimoto_distance.py[m[36m:[m[32m150[m[36m:[m            "[1;31meuclidean_distance[m",
+[35mtest/test_tanimoto_distance.py[m[36m:[m[32m165[m[36m:[m    assert "score:[1;31meuclidean_distance[m" in result.column_names
