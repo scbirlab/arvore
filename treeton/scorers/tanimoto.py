@@ -83,10 +83,10 @@ class TanimotoReference:
         self,
         fingerprints,
         *,
+        n_neighbors: int = 1,
         query_chunk: int = 32,
-        reference_chunk: int = 512,
+        reference_chunk: int = 512
     ) -> NDArray:
-        """Exact 1 - maximum Tanimoto similarity."""
         if query_chunk < 1 or reference_chunk < 1:
             raise ValueError("Chunk sizes must be positive")
 

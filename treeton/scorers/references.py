@@ -5,18 +5,27 @@ fitted model and preprocessing define the scope of every cache instance.
 Concurrent read-only predictions are supported; fitting during prediction is not.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from threading import RLock
 import json
 
 
+def _canonical_json(spec):
+    return json.dumps(
+        spec, 
+        sort_keys=True, 
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    
+
 def canonical_spec(spec):
     """Validate and copy a canonical, JSON-native resource specification."""
     if not isinstance(spec, dict) or not isinstance(spec.get("type"), str):
         raise ValueError("Reference spec requires a 'type' string")
-    encoded = json.dumps(spec, sort_keys=True, separators=(",", ":"),
-                         allow_nan=False)
+    encoded = _canonical_json(spec)
     result = json.loads(encoded)
     if result != spec:
         raise ValueError("Reference spec must use JSON-native values")
@@ -26,8 +35,7 @@ def canonical_spec(spec):
 def reference_key(spec):
     """Stable SHA-256 identity for a resource's complete construction spec."""
     spec = canonical_spec(spec)
-    payload = json.dumps(spec, sort_keys=True, separators=(",", ":"),
-                         allow_nan=False).encode("utf-8")
+    payload = _canonical_json(spec).encode("utf-8")
     return sha256(payload).hexdigest()
 
 
@@ -48,18 +56,16 @@ class ReferenceCache:
         self._lock = RLock()
         self._entries = {}
 
-    def get_or_build(self, spec, builder):
-        spec = canonical_spec(spec)
+    def get_or_build(
+        self, 
+        spec: Mapping[str, ...], 
+        builder: Callable
+    ):
         key = reference_key(spec)
         with self._lock:
-            entry = self._entries.get(key)
-            if entry is not None:
-                if entry.spec != spec:
-                    raise ValueError("Reference digest collision")
-                return entry.value
-            value = builder()
-            self._entries[key] = PreparedReference(spec, value)
-            return value
+            if key not in self._entries:
+                self._entries[key] = builder()
+            return self._entries[key]
 
     def clear(self):
         with self._lock:

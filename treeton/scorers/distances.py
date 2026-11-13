@@ -18,6 +18,8 @@ class EuclideanReference:
     n_reference: int
     n_features: int
     features: NDArray
+    n_neighbors: int = 1
+    metric: str = "euclidean"
 
     @classmethod
     def build(cls, X) -> "EuclideanReference":
@@ -36,8 +38,8 @@ class EuclideanReference:
             )
 
         index = NearestNeighbors(
-            n_neighbors=1,
-            metric="euclidean",
+            n_neighbors=self.n_neighbors,
+            metric=metric,
             algorithm="auto",
         )
         index.fit(X)
@@ -69,11 +71,11 @@ class EuclideanReference:
 
         distances, _ = self.index.kneighbors(
             X,
-            n_neighbors=1,
+            n_neighbors=self.n_neighbors,
             return_distance=True,
         )
 
-        return distances[:, 0]
+        return np.mean(distances, axis=-1)
 
 
 @register_scorer
@@ -81,14 +83,19 @@ class EuclideanReference:
 class EuclideanDistance:
     """Distance to the nearest training reference in feature space."""
 
+    n_neighbors: int = 1
     name: ClassVar[str] = "euclidean_distance"
+    version: ClassVar[str] = 1
 
     def reference_specs(self, box):
         return ({
-            "type": "euclidean", "version": 1,
+            "type": "euclidean", 
+            "version": self.version,
             "features": list(box.features),
-            "metric": "euclidean", "algorithm": "auto",
-            "n_neighbors": 1, "dtype": "float64",
+            "metric": "euclidean", 
+            "algorithm": "auto",
+            "n_neighbors": self.n_neighbors, 
+            "dtype": "float64",
         },)
 
     def prepare(self, box, *, batch_size=1024):
@@ -107,7 +114,8 @@ class EuclideanDistance:
             )
 
         return box.references.get_or_build(
-            self.reference_specs(box)[0], build
+            self.reference_specs(box)[0], 
+            build,
         )
 
     def __call__(self, context: ScoreContext) -> NDArray:

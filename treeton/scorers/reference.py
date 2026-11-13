@@ -25,7 +25,7 @@ def iter_batches(data, batch_size):
         n = lengths.pop()
         for start in range(0, n, batch_size):
             yield {
-                key: value[start:start + batch_size]
+                key: value[start:(start + batch_size)]
                 for key, value in data.items()
             }
         return
@@ -40,9 +40,7 @@ def feature_batches(box, *, batch_size):
     """Yield model-space feature matrices from fitted training data."""
     from ..box.base import _matrix
 
-    data = training_data(box)
-
-    for batch in iter_batches(data, batch_size):
+    for batch in iter_batches(box._training_reference(), batch_size):
         if not batch:
             continue
 

@@ -696,25 +696,20 @@ class Box:
         prepared = self._unwrap(working_pipeline(data))
         return prepared.with_format(None), working_pipeline
 
-
-
-
     def _training_reference(self):
-        """Return fitted training rows, retaining raw columns."""
-        data_out = getattr(self.pipeline, "data_out", None)
+        """Return training rows, retaining raw columns."""
+        if self.pipeline.data_out is not None:
+            data = self.pipeline.data_out
 
-        if data_out is not None:
-            data = self._unwrap(data_out)
-
-        elif getattr(self.pipeline, "data_in", None) is not None:
-            data, _ = self._pre_predict(data=None)
+        elif self.pipeline.data_in is not None:
+            data = self.pipeline(self.pipeline.data_in)
 
         else:
             raise ValueError(
                 "Reference scoring requires training data "
-                "in the fitted Aspect pipeline"
+                "in the Aspect pipeline"
             )
-
+        data = self._unwrap(self.pipeline.data_out)
         return (
             data.with_format(None)
             if hasattr(data, "with_format")
