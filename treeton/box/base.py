@@ -431,13 +431,17 @@ class Box:
         allow_unsafe: bool = False,
         *,
         score=None,
+        save_references: bool = True,
         **pipeline_kwargs,
     ) -> None:
-        """Atomically checkpoint a Box and prepared references.
+        """Atomically checkpoint a Box and optionally its references.
 
-        If score is supplied, first prepare any reference resources required by
-        those scorers. Prepared resources from earlier predictions are always
-        included. Does not implicitly write anything during prediction.
+        When save_references=True, prepare resources requested by score
+        and persist all supported previously prepared resources.
+
+        When False, neither prepare nor persist scorer references.
+        Fitted model, pipeline and retained training data are still saved.
+        Prediction itself never implicitly writes scorer references.
         """
         import shutil
         import tempfile
@@ -447,19 +451,28 @@ class Box:
         from ..scorers.registry import resolve_scorers
         from ..scorers.runner import ScoringRunner
         from ..scorers.persistence import (
-            fitted_state_digest, save_references, validate_requested,
+            fitted_state_digest,
+            save_references as persist_references,
+            validate_requested,
         )
 
-        scorers = resolve_scorers(score)
+        if not isinstance(save_references, bool):
+            raise TypeError("save_references must be a boolean")
 
-        with self.references.track() as requested:
-            if scorers:
-                ScoringRunner(
-                    self, scorers
-                ).prepare(batch_size=DEFAULT_BATCH_SIZE)
+        if save_references:
+            scorers = resolve_scorers(score)
+            with self.references.track() as requested:
+                if scorers:
+                    ScoringRunner(
+                        self, scorers
+                    ).prepare(batch_size=DEFAULT_BATCH_SIZE)
 
-        snapshot = self.references.snapshot()
-        validate_requested(requested, snapshot)
+            snapshot = self.references.snapshot()
+            validate_requested(requested, snapshot)
+        else:
+            # Skip scorer resolution, preparation and persistence.
+            # Existing in-memory references remain untouched.
+            snapshot = {}
 
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -483,10 +496,11 @@ class Box:
                 staging / manifest["artefacts"]["training_data"],
                 **pipeline_kwargs,
             )
-            identity = fitted_state_digest(staging, config)
-            refs = save_references(staging, snapshot, identity)
-            if refs is not None:
-                manifest["artefacts"]["references"] = refs
+            if save_references:
+                identity = fitted_state_digest(staging, config)
+                refs = persist_references(staging, snapshot, identity)
+                if refs is not None:
+                    manifest["artefacts"]["references"] = refs
             save_json(manifest, staging / CONFIG_FILENAME)
 
             # Staging is complete before publishing. Directory overwrite

@@ -90,6 +90,16 @@ def main() -> None:
         ),
     )
 
+    skip_ref_save_opt = CLIOption(
+        "--skip-ref-save",
+        action="store_true",
+        default=False,
+        help=(
+            "Do not prepare or checkpoint scorer reference resources. "
+            "The fitted model and training data are still saved."
+        ),
+    )
+
     disaggregate_opt = CLIOption(
         "--disaggregate",
         action="store_true",
@@ -141,6 +151,7 @@ def main() -> None:
             pipeline_opt,
             set_opt,
             cache_opt,
+            skip_ref_save_opt,
         ],
         main=_train,
     )

@@ -449,3 +449,103 @@ def test_save_tracks_actual_reference_requests(fitted_box, tmp_path):
 
     result = _predict(restored, data, "feature_distance")
     assert "score:feature_distance" in result.column_names
+
+
+def test_save_without_reference_persistence(fitted_box, tmp_path):
+    box, data = fitted_box
+
+    # Prepare a reference beforehand.
+    _predict(box, data, "feature_distance")
+    assert len(box.references.snapshot()) == 1
+
+    path = tmp_path / "no_references.tt"
+
+    box.save(path, save_references=False)
+
+    # Saving must not clear existing in-memory references.
+    assert len(box.references.snapshot()) == 1
+
+    manifest = json.loads((path / "config.json").read_text())
+    assert "references" not in manifest["artefacts"]
+    assert not (path / "references").exists()
+
+    restored = _load(path)
+    assert not restored.references.snapshot()
+
+    # References can still be rebuilt on demand.
+    result = _predict(restored, data, "feature_distance")
+    assert "score:feature_distance" in result.column_names
+    assert len(restored.references.snapshot()) == 1
+
+
+def test_skip_ref_save_does_not_prepare_scores(
+    fitted_box, tmp_path, monkeypatch
+):
+    box, _ = fitted_box
+
+    from treeton.scorers.distances import FeatureReference
+
+    def fail(*args, **kwargs):
+        raise AssertionError("Reference should not be prepared")
+
+    monkeypatch.setattr(FeatureReference, "build", fail)
+
+    path = tmp_path / "skip_prepare.tt"
+
+    box.save(
+        path,
+        score="feature_distance",
+        save_references=False,
+    )
+
+    assert path.is_dir()
+    assert not box.references.snapshot()
+    assert not (path / "references").exists()
+
+
+def test_default_reference_persistence_unchanged(
+    fitted_box, tmp_path
+):
+    box, _ = fitted_box
+    path = tmp_path / "default_references.tt"
+
+    box.save(path, score="feature_distance")
+
+    manifest = json.loads((path / "config.json").read_text())
+    assert "references" in manifest["artefacts"]
+    assert (path / "references").exists()
+
+    restored = _load(path)
+    assert len(restored.references.snapshot()) == 1
+
+
+def test_skip_ref_save_overwrites_existing_reference_checkpoint(
+    fitted_box, tmp_path
+):
+    box, _ = fitted_box
+    path = tmp_path / "overwrite.tt"
+
+    box.save(path, score="feature_distance")
+    assert (path / "references").exists()
+
+    # Replacing a checkpoint must not retain stale reference files.
+    box.save(path, save_references=False)
+
+    manifest = json.loads((path / "config.json").read_text())
+    assert "references" not in manifest["artefacts"]
+    assert not (path / "references").exists()
+
+    restored = _load(path)
+    assert not restored.references.snapshot()
+
+
+def test_save_references_rejects_nonboolean(fitted_box, tmp_path):
+    box, _ = fitted_box
+
+    with pytest.raises(TypeError, match="boolean"):
+        box.save(
+            tmp_path / "invalid.tt",
+            save_references="false",
+        )
+
+    assert not (tmp_path / "invalid.tt").exists()

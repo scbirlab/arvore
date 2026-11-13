@@ -39,8 +39,21 @@ def _train(args: Namespace) -> None:
     # prediction config; Box.save accepts the resolved scorer instances.
     from .scoring import resolve_cli_scores
     save_kwargs = dict(config.get("save", {}))
-    if "score" in save_kwargs:
-        save_kwargs["score"] = resolve_cli_scores(
-            config=save_kwargs["score"],
-        )
+
+    if args.skip_ref_save:
+        # The CLI opt-out overrides save.save_references in JSON.
+        # No need to instantiate or prepare configured scorers.
+        save_kwargs.pop("score", None)
+        save_kwargs["save_references"] = False
+
+    elif save_kwargs.get("save_references", True):
+        if "score" in save_kwargs:
+            save_kwargs["score"] = resolve_cli_scores(
+                config=save_kwargs["score"],
+            )
+
+    else:
+        # Declarative opt-out has the same semantics as the CLI flag.
+        save_kwargs.pop("score", None)
+
     box.save(args.checkpoint, **save_kwargs)
