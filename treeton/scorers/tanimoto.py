@@ -10,13 +10,6 @@ from .base import Requirements, ScoreContext
 from .registry import register_scorer
 
 
-# Compatible with NumPy 1.26; no np.bit_count dependency.
-_POPCOUNT = np.unpackbits(
-    np.arange(256, dtype=np.uint8)[:, None],
-    axis=1,
-).sum(axis=1).astype(np.uint8)
-
-
 def _encode_fingerprints(fingerprints, n_bits=None):
     """Validate and bit-pack a matrix of binary fingerprints."""
     bits = np.asarray(fingerprints)
@@ -52,11 +45,10 @@ def _encode_fingerprints(fingerprints, n_bits=None):
         bitorder="little",
     )
 
-    counts = _POPCOUNT[packed].sum(
+    counts = np.bitwise_count(packed).sum(
         axis=1,
         dtype=np.int32,
     )
-
     return packed, counts, bits.shape[1]
 
 
@@ -79,70 +71,85 @@ class TanimotoReference:
 
         return cls(packed, counts, n_bits)
 
+    
     def distance(
         self,
         fingerprints,
         *,
         n_neighbors: int = 1,
         query_chunk: int = 32,
-        reference_chunk: int = 512
+        reference_chunk: int = 512,
     ) -> NDArray:
+        """Mean exact Tanimoto distance to the k closest references.
+
+        Uses bit-packed fingerprints and bounded pairwise blocks.
+        """
         if query_chunk < 1 or reference_chunk < 1:
             raise ValueError("Chunk sizes must be positive")
+
+        if not 1 <= n_neighbors <= len(self.packed):
+            raise ValueError("Invalid number of neighbours")
 
         queries, q_counts, _ = _encode_fingerprints(
             fingerprints,
             n_bits=self.n_bits,
         )
 
-        best = np.zeros(len(queries), dtype=np.float64)
+        result = np.empty(len(queries), dtype=np.float64)
 
         for q_start in range(0, len(queries), query_chunk):
-            q_end = q_start + query_chunk
-            q = queries[q_start:q_end]
-            q_count = q_counts[q_start:q_end]
+            q = queries[q_start:q_start + query_chunk]
+            qc = q_counts[q_start:q_start + query_chunk]
 
-            q_best = np.zeros(len(q), dtype=np.float64)
+            # Retain only the k highest similarities per query.
+            best = np.full(
+                (len(q), n_neighbors),
+                -np.inf,
+                dtype=np.float64,
+            )
 
-            for r_start in range(
-                0, len(self.packed), reference_chunk
-            ):
-                r_end = r_start + reference_chunk
-                r = self.packed[r_start:r_end]
-                r_count = self.counts[r_start:r_end]
+            for r_start in range(0, len(self.packed), reference_chunk):
+                r = self.packed[r_start:r_start + reference_chunk]
+                rc = self.counts[r_start:r_start + reference_chunk]
 
-                intersection = _POPCOUNT[
+                intersection = np.bitwise_count(
                     np.bitwise_and(
                         q[:, None, :],
                         r[None, :, :],
                     )
-                ].sum(axis=2, dtype=np.int32)
+                ).sum(axis=2, dtype=np.int32)
 
                 union = (
-                    q_count[:, None]
-                    + r_count[None, :]
+                    qc[:, None]
+                    + rc[None, :]
                     - intersection
                 )
 
-                # Both-empty fingerprints have similarity 1.
+                # Two empty fingerprints have similarity 1.
                 similarity = np.divide(
                     intersection,
                     union,
-                    out=np.ones(
-                        union.shape,
-                        dtype=np.float64,
-                    ),
+                    out=np.ones(union.shape, dtype=np.float64),
                     where=union != 0,
                 )
 
-                q_best = np.maximum(
-                    q_best,
-                    similarity.max(axis=1),
+                combined = np.concatenate(
+                    (best, similarity),
+                    axis=1,
                 )
 
-            best[q_start:q_end] = q_best
+                # Partial selection avoids sorting every similarity.
+                best = np.partition(
+                    combined,
+                    kth=combined.shape[1] - n_neighbors,
+                    axis=1,
+                )[:, -n_neighbors:]
 
-        return np.clip(1.0 - best, 0.0, 1.0)
+            result[q_start:q_start + len(q)] = (
+                1. - best.mean(axis=1)
+            )
+
+        return np.clip(result, 0., 1.)
 
 
 @register_scorer
@@ -151,16 +158,20 @@ class TanimotoDistance:
     """Nearest-reference Tanimoto distance."""
 
     name: ClassVar[str] = "tanimoto_distance"
-
+    version: ClassVar[int] = 1
+    
     column: str = "fingerprint"
     structure_column: str = "smiles"
     fingerprint_transform: str = "morgan-fingerprint"
+    radius: int = 2
+    n_neighbors: int = 1
     reference_batch_size: int = 2048
     query_chunk: int = 32
     reference_chunk: int = 512
 
     def __post_init__(self):
         if min(
+            self.n_neighbors,
             self.reference_batch_size,
             self.query_chunk,
             self.reference_chunk,
@@ -179,7 +190,12 @@ class TanimotoDistance:
         return DataPipeline({
             self.column: (
                 self.structure_column,
-                self.fingerprint_transform,
+                {
+                    "name": self.fingerprint_transform,
+                    "kwargs": {
+                        "radius": 2,
+                    },
+                },
             ),
         })
 
@@ -274,7 +290,8 @@ class TanimotoDistance:
     def reference_specs(self, box):
         """The query chunk sizes do not affect reference identity."""
         return ({
-            "type": "tanimoto", "version": 1,
+            "type": "tanimoto", 
+            "version": self.version,
             "column": self.column,
             "structure_column": self.structure_column,
             "fingerprint_transform": self.fingerprint_transform,
@@ -283,10 +300,9 @@ class TanimotoDistance:
 
     def prepare(self, box, *, batch_size=1024):
         """Prepare packed training fingerprints once per fitted Box."""
-        from .reference import training_data
 
         def build():
-            data = training_data(box)
+            data = box._training_reference()
             columns = set(data.column_names)
 
             if (
@@ -294,9 +310,8 @@ class TanimotoDistance:
                 and self.structure_column not in columns
             ):
                 # Recover auxiliary raw columns discarded by Aspect.
-                source = getattr(box.pipeline, "data_in", None)
-                if source is not None:
-                    source = box._unwrap(source)
+                if box.pipeline.data_in is not None:
+                    source = box._unwrap(box.pipeline.data_in)
                     if hasattr(source, "with_format"):
                         source = source.with_format(None)
                     source_columns = (
@@ -309,29 +324,28 @@ class TanimotoDistance:
                         or self.structure_column in source_columns
                     ):
                         data = source
-
             return self.prepare_reference(data)
 
         return box.references.get_or_build(
-            self.reference_specs(box)[0], build
+            self.reference_specs(box)[0], 
+            build,
         )
 
     def __call__(self, context: ScoreContext) -> NDArray:
         reference = context.state
-
         if reference is None:
             raise ValueError(
                 "Tanimoto reference has not been prepared"
             )
-
         if self.column not in context.batch:
             raise ValueError(
                 f"Candidate fingerprint column "
                 f"{self.column!r} is missing"
             )
-
         return reference.distance(
             context.batch[self.column],
+            n_neighbors=self.n_neighbors,
             query_chunk=self.query_chunk,
             reference_chunk=self.reference_chunk,
         )
+

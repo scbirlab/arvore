@@ -286,3 +286,133 @@ def test_default_xgboost_repeat_zero_spread_warning():
             map_kwargs={"load_from_cache_file": False},
         )
     np.testing.assert_allclose(result["score:ensemble_sd:y"], 0)
+
+
+
+def test_tanimoto_numpy2_matches_brute_force():
+    from treeton.scorers.tanimoto import TanimotoReference
+
+    rng = np.random.default_rng(123)
+    references = rng.integers(0, 2, (37, 130), dtype=np.uint8)
+    queries = rng.integers(0, 2, (13, 130), dtype=np.uint8)
+
+    # Include empty fingerprints and identical references.
+    references[0] = 0
+    queries[0] = 0
+    queries[1] = references[1]
+
+    ref = TanimotoReference.build(references)
+
+    expected = []
+    for query in queries:
+        intersection = np.logical_and(
+            references, query
+        ).sum(axis=1)
+        union = np.logical_or(
+            references, query
+        ).sum(axis=1)
+
+        similarity = np.divide(
+            intersection,
+            union,
+            out=np.ones(len(references), dtype=float),
+            where=union != 0,
+        )
+        expected.append(1 - similarity)
+
+    expected = np.asarray(expected)
+
+    for k in (1, 2, 4, 8):
+        observed = ref.distance(
+            queries,
+            n_neighbors=k,
+            query_chunk=3,
+            reference_chunk=5,
+        )
+        truth = np.sort(expected, axis=1)[:, :k].mean(axis=1)
+        np.testing.assert_allclose(
+            observed, truth, rtol=0, atol=1e-12
+        )
+
+
+def test_euclidean_k_neighbours():
+    from treeton.scorers.distances import EuclideanReference
+
+    reference = EuclideanReference.build(
+        np.array([[0.0], [2.0], [5.0]])
+    )
+    queries = np.array([[1.0], [4.0]])
+
+    np.testing.assert_allclose(
+        reference.distance(queries, n_neighbors=1),
+        [1.0, 1.0],
+    )
+    np.testing.assert_allclose(
+        reference.distance(queries, n_neighbors=2),
+        [1.0, 1.5],
+    )
+
+
+def test_neighbour_count_does_not_duplicate_references(fitted_box):
+    from treeton.scorers.distances import EuclideanDistance
+
+    box, data = fitted_box
+
+    scorers = [
+        EuclideanDistance(n_neighbors=1),
+        EuclideanDistance(n_neighbors=4),
+        TanimotoDistance(n_neighbors=1),
+        TanimotoDistance(n_neighbors=4),
+    ]
+
+    for scorer in scorers:
+        scorer.prepare(box)
+
+    assert len(box.references.snapshot()) == 2
+
+    result = _predict(
+        box, data,
+        {
+            "euclidean_1": scorers[0],
+            "euclidean_4": scorers[1],
+            "tanimoto_1": scorers[2],
+            "tanimoto_4": scorers[3],
+        },
+    )
+
+    assert len(result) == len(data)
+    assert len(box.references.snapshot()) == 2
+
+    # Mean k-neighbour distance cannot be smaller
+    # than the nearest-neighbour distance.
+    assert np.all(
+        np.asarray(result["score:euclidean_4"])
+        >= np.asarray(result["score:euclidean_1"])
+    )
+    assert np.all(
+        np.asarray(result["score:tanimoto_4"])
+        >= np.asarray(result["score:tanimoto_1"])
+    )
+
+
+def test_reference_cache_retains_specification():
+    from treeton.scorers.references import (
+        ReferenceCache, reference_key,
+    )
+
+    cache = ReferenceCache()
+    spec = {"type": "test", "version": 1}
+    value = object()
+
+    assert cache.get_or_build(spec, lambda: value) is value
+
+    key = reference_key(spec)
+    assert cache.snapshot()[key] == (spec, value)
+
+    restored = ReferenceCache()
+    restored.restore(cache.snapshot())
+
+    assert restored.get_or_build(
+        spec,
+        lambda: pytest.fail("Unexpected rebuild"),
+    ) is value

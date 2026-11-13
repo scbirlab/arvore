@@ -1,12 +1,7 @@
-"""Per-Box, thread-safe prepared reference resources.
 
-Resource specifications describe *construction*, not scorer aliases. The Box's
-fitted model and preprocessing define the scope of every cache instance.
-Concurrent read-only predictions are supported; fitting during prediction is not.
-"""
+"""Per-Box cache of prepared reference resources."""
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
 from hashlib import sha256
 from threading import RLock
 import json
@@ -14,42 +9,34 @@ import json
 
 def _canonical_json(spec):
     return json.dumps(
-        spec, 
-        sort_keys=True, 
+        spec,
+        sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
     )
-    
+
 
 def canonical_spec(spec):
-    """Validate and copy a canonical, JSON-native resource specification."""
+    """Return a validated JSON-native construction specification."""
     if not isinstance(spec, dict) or not isinstance(spec.get("type"), str):
         raise ValueError("Reference spec requires a 'type' string")
-    encoded = _canonical_json(spec)
-    result = json.loads(encoded)
+
+    result = json.loads(_canonical_json(spec))
     if result != spec:
         raise ValueError("Reference spec must use JSON-native values")
     return result
 
 
 def reference_key(spec):
-    """Stable SHA-256 identity for a resource's complete construction spec."""
+    """Stable identifier independent of Python object identity."""
     spec = canonical_spec(spec)
-    payload = _canonical_json(spec).encode("utf-8")
-    return sha256(payload).hexdigest()
-
-
-@dataclass(frozen=True)
-class PreparedReference:
-    spec: dict
-    value: object
+    return sha256(_canonical_json(spec).encode()).hexdigest()
 
 
 class ReferenceCache:
-    """Store complete references; builders run once under an instance lock.
+    """Prepare each resource once, scoped to a fitted Box.
 
-    Resource builders must return fully prepared, immutable-in-use objects.
-    Failed builds do not insert entries. Call clear() after external mutation.
+    Builders run under a per-instance lock.
     """
 
     def __init__(self):
@@ -57,26 +44,28 @@ class ReferenceCache:
         self._entries = {}
 
     def get_or_build(
-        self, 
-        spec: Mapping[str, ...], 
-        builder: Callable
+        self,
+        spec: Mapping,
+        builder: Callable,
     ):
+        spec = canonical_spec(dict(spec))
         key = reference_key(spec)
+
         with self._lock:
             if key not in self._entries:
-                self._entries[key] = builder()
-            return self._entries[key]
+                self._entries[key] = (spec, builder())
+            return self._entries[key][1]
 
     def clear(self):
         with self._lock:
             self._entries.clear()
 
     def snapshot(self):
-        """Atomically capture a consistent set of prepared objects."""
+        """Return a consistent snapshot of prepared entries."""
         with self._lock:
             return dict(self._entries)
 
     def restore(self, entries):
-        """Install already-validated resources from a checkpoint."""
+        """Install resources validated by the checkpoint loader."""
         with self._lock:
             self._entries = dict(entries)

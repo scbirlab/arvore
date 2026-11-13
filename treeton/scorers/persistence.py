@@ -11,10 +11,10 @@ import os
 
 import numpy as np
 
-from .references import PreparedReference, canonical_spec, reference_key
+from .references import canonical_spec, reference_key
 
 
-FORMAT_VERSION = 1
+FORMAT_VERSION: int = 1
 CODEC_TYPES = frozenset({
     "leaf_counts", "leaf_percentile", "euclidean", "tanimoto",
 })
@@ -157,14 +157,16 @@ def _encode(resource_type, value):
 def _decode(resource_type, archive):
     if resource_type in {"leaf_counts", "leaf_percentile"}:
         return _decode_leaf(archive, resource_type == "leaf_percentile")
+
     if resource_type == "euclidean":
         from .distances import EuclideanReference
         features = np.asarray(archive["features"])
         if features.dtype != np.float64:
             raise ValueError("Expected float64 Euclidean features")
         return EuclideanReference.build(features)
+
     if resource_type == "tanimoto":
-        from .tanimoto import TanimotoReference, _POPCOUNT
+        from .tanimoto import TanimotoReference
         packed = np.asarray(archive["packed"])
         counts = np.asarray(archive["counts"])
         n_bits = int(archive["n_bits"])
@@ -174,7 +176,13 @@ def _decode(resource_type, archive):
             or counts.ndim != 1 or len(counts) != len(packed)
             or not np.issubdtype(counts.dtype, np.integer)
             or n_bits < 1 or packed.shape[1] != (n_bits + 7) // 8
-            or np.any(counts != _POPCOUNT[packed].sum(axis=1, dtype=np.int32))
+            or np.any(
+                counts != np.bitwise_count(packed).sum(
+                    axis=1,
+                    dtype=np.int32,
+                )
+            )
+
         ):
             raise ValueError("Invalid Tanimoto reference archive")
         if n_bits % 8:
@@ -191,19 +199,23 @@ def save_references(checkpoint, entries, state_digest):
     """Write all supported prepared resources; return manifest metadata."""
     stored = []
     for key, entry in sorted(entries.items()):
-        spec = canonical_spec(entry.spec)
+        spec, value = entry
+        spec = canonical_spec(spec)
         if reference_key(spec) != key:
             raise ValueError("Reference cache key does not match specification")
+
         kind = spec["type"]
         if kind not in CODEC_TYPES:
             continue  # Optional in-memory-only reference.
+
         if spec.get("version") != FORMAT_VERSION:
             raise ValueError(f"Unsupported {kind!r} reference spec version")
+
         directory = Path(checkpoint) / "references"
         directory.mkdir(exist_ok=True)
         filename = f"{key}.npz"
         file = directory / filename
-        np.savez_compressed(file, **_encode(kind, entry.value))
+        np.savez_compressed(file, **_encode(kind, value))
         stored.append({
             "key": key,
             "spec": spec,
@@ -220,17 +232,26 @@ def save_references(checkpoint, entries, state_digest):
     }
 
 
-def load_references(box, checkpoint, metadata, config):
+def load_references(
+    box, 
+    checkpoint, 
+    metadata, 
+    config
+):
     """Verify *all* archives before installing any cached resource."""
     if metadata is None:
         return
+
     if not isinstance(metadata, dict) or metadata.get("format_version") != FORMAT_VERSION:
         raise ValueError("Unsupported reference checkpoint manifest")
+
     if metadata.get("state_sha256") != fitted_state_digest(checkpoint, config):
         raise ValueError("Reference fitted-state checksum mismatch")
+
     items = metadata.get("items")
     if not isinstance(items, list):
         raise ValueError("Invalid reference checkpoint entries")
+
     recovered = {}
     for item in items:
         if not isinstance(item, dict):
@@ -251,8 +272,9 @@ def load_references(box, checkpoint, metadata, config):
             raise ValueError("Reference checksum mismatch")
         with np.load(file, allow_pickle=False) as archive:
             value = _decode(spec["type"], archive)
-        recovered[key] = PreparedReference(spec, value)
+        recovered[key] = (spec, value)
     box.references.restore(recovered)
+    return None
 
 
 def validate_requested(box, scorers, entries):
