@@ -161,6 +161,20 @@ def test_checkpoint_model_override(training_data, tmp_path):
         for member in fresh.model.members.values()
     )
 
+    original = Box.from_config(BOX_SPEC)
+    original.fit(training_data, skip_eval=True)
+    original.save(checkpoint)
+
+    loaded = Box.load(
+        checkpoint,
+        trusted_types=("sklearn.tree._tree.Tree",),
+    )
+
+    assert loaded.to_config() == original.to_config()
+
+    fresh = Box.from_config(loaded.to_config())
+    assert fresh.to_config() == original.to_config()
+
 
 def test_opaque_checkpoint_requires_model_spec(
     training_data, tmp_path

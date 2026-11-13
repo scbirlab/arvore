@@ -53,9 +53,9 @@ def test_reuses_reference_across_predictions_and_aliases(fitted_box, monkeypatch
     orig = FeatureReference.build.__func__
     calls = []
 
-    def counted(cls, X):
+    def counted(cls, X, *, metric="euclidean"):
         calls.append(len(X))
-        return orig(cls, X)
+        return orig(cls, X, metric=metric)
 
     monkeypatch.setattr(FeatureReference, "build", classmethod(counted))
     _predict(box, data, "feature_distance")

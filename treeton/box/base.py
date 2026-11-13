@@ -380,7 +380,7 @@ class Box:
             raise ValueError(
                 f"Box.from_config() requires a model specification. "
                 "Opaque models can only be reconstructed from a "
-                "saved whole-model checkpoint. Received {config=}."
+                f"saved whole-model checkpoint. Received {config=}."
             )
 
         model_config = _json_copy(model_config)
