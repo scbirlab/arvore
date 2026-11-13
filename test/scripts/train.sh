@@ -56,4 +56,15 @@ arvore predict \
     --checkpoint "$OUTPUT/pred.pv" \
     --output "$OUTPUT/pred.csv" \
     --cache "$CACHE"
+
+arvore evaluate \
+    "$OUTPUT/model.ao" \
+    --trust-sklearn-trees \
+    --data "$TRAIN" \
+    --start "$START" \
+    --stop "$STOP" \
+    --metrics rmsd mae pearson spearman \
+    --result "$OUTPUT/eval.json" \
+    --output "$OUTPUT/eval.csv" \
+    --cache "$CACHE"
  
