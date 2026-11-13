@@ -35,21 +35,12 @@ def _train(args: Namespace) -> None:
         validation=args.validation,
         **config.get("fit", {}),
     )
-    if args.cache_leaf_reference:
-        from ..scorers import InverseLeafOccupancy
-        from ..box.base import DEFAULT_BATCH_SIZE
-
-        InverseLeafOccupancy(
-            normalization="reference_percentile"
-        ).prepare(
-            box,
-            batch_size=config.get(
-                "batch_size",
-                DEFAULT_BATCH_SIZE,
-            ),
+    # Train-config save.score uses the same declarative scorer syntax as
+    # prediction config; Box.save accepts the resolved scorer instances.
+    from .scoring import resolve_cli_scores
+    save_kwargs = dict(config.get("save", {}))
+    if "score" in save_kwargs:
+        save_kwargs["score"] = resolve_cli_scores(
+            config=save_kwargs["score"],
         )
-
-    box.save(
-        args.checkpoint,
-        **config.get("save", {}),
-    )
+    box.save(args.checkpoint, **save_kwargs)

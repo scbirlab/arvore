@@ -306,7 +306,19 @@ class Box:
             # Compatibility with arbitrary, non-Ensemble estimators.
             self._model_config_fallback = _json_copy(model_config)
         self._validation_score = None
-        self._scorer_cache = None
+        self._references = None
+
+    @property
+    def references(self):
+        """References for this fitted Box (shared by all scorer invocations).
+
+        Call box.references.clear() after external estimator/data mutation.
+        Do not fit and predict concurrently on a Box.
+        """
+        from ..scorers.references import ReferenceCache
+        if getattr(self, "_references", None) is None:
+            self._references = ReferenceCache()
+        return self._references
 
     @property
     def model_config(self):
@@ -414,50 +426,86 @@ class Box:
         return config
 
     def save(
-        self, 
+        self,
         path: str | os.PathLike,
         allow_unsafe: bool = False,
-        **pipeline_kwargs
+        *,
+        score=None,
+        **pipeline_kwargs,
     ) -> None:
-        """Save configuration and model state."""
+        """Atomically checkpoint a Box and prepared references.
+
+        If score is supplied, first prepare any reference resources required by
+        those scorers. Prepared resources from earlier predictions are always
+        included. Does not implicitly write anything during prediction.
+        """
+        import shutil
+        import tempfile
+        import uuid
+
         from ..models.adapters import save_model
-        import joblib
+        from ..scorers.registry import resolve_scorers
+        from ..scorers.runner import ScoringRunner
+        from ..scorers.persistence import (
+            fitted_state_digest, save_references, validate_requested,
+        )
+
+        scorers = resolve_scorers(score)
+        if scorers:
+            ScoringRunner(self, scorers).prepare(batch_size=DEFAULT_BATCH_SIZE)
+
+        snapshot = self.references.snapshot()
+        validate_requested(self, scorers, snapshot)
+
         path = Path(path)
-        path.mkdir(parents=True, exist_ok=True)
-
-        model_metadata = save_model(
-            self.model,
-            path,
-            allow_unsafe=allow_unsafe,
-        )
-        from ..models.ensemble import Ensemble
-
-        config = self.to_config()
-
-        if isinstance(self.model, Ensemble):
-            # The ensemble codec persists its own configuration.
-            config["model_config"] = None
-        
-        manifest = {
-            "schema_version": self.SCHEMA_VERSION,
-            "config": config,
-            "model": model_metadata,
-            "artefacts": {
-                "training_data": "training-data.as",
+        path.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(
+            prefix=f".{path.name}.staging-", dir=path.parent,
+        ))
+        try:
+            model_metadata = save_model(
+                self.model, staging, allow_unsafe=allow_unsafe,
+            )
+            config = self.to_config()
+            if isinstance(self.model, Ensemble):
+                config["model_config"] = None
+            manifest = {
+                "schema_version": self.SCHEMA_VERSION,
+                "config": config,
+                "model": model_metadata,
+                "artefacts": {"training_data": "training-data.as"},
             }
-        }
-        self.pipeline.save(
-            path / manifest["artefacts"]["training_data"],
-            **pipeline_kwargs,
-        )
+            self.pipeline.save(
+                staging / manifest["artefacts"]["training_data"],
+                **pipeline_kwargs,
+            )
+            identity = fitted_state_digest(staging, config)
+            refs = save_references(staging, snapshot, identity)
+            if refs is not None:
+                manifest["artefacts"]["references"] = refs
+            save_json(manifest, staging / CONFIG_FILENAME)
 
-        from ..scorers.cache import save_score_cache
-
-        leaf_cache = save_score_cache(self, path)
-        if leaf_cache is not None:
-            manifest["artefacts"]["leaf_reference"] = leaf_cache
-
-        save_json(manifest, path / CONFIG_FILENAME)
+            # Staging is complete before publishing. Directory overwrite
+            # uses a rollback backup; never publish a partial checkpoint.
+            backup = None
+            if path.exists():
+                if not path.is_dir():
+                    raise FileExistsError(path)
+                backup = path.with_name(
+                    f".{path.name}.backup-{uuid.uuid4().hex}"
+                )
+                path.rename(backup)
+            try:
+                staging.rename(path)
+            except BaseException:
+                if backup is not None and not path.exists():
+                    backup.rename(path)
+                raise
+            if backup is not None:
+                shutil.rmtree(backup)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
         return None
 
     @classmethod
@@ -515,12 +563,9 @@ class Box:
             model_config=config.get("model_config"),
         )
 
-        from ..scorers.cache import load_score_cache
-
-        load_score_cache(
-            box,
-            path,
-            artefacts.get("leaf_reference"),
+        from ..scorers.persistence import load_references
+        load_references(
+            box, path, artefacts.get("references"), config,
         )
 
         return box
@@ -565,9 +610,7 @@ class Box:
     ):
         """Fit the model using raw training and optional validation and test data."""
         from ..models import get_adapter
-        from ..scorers.cache import invalidate_score_cache
-
-        invalidate_score_cache(self)
+        self.references.clear()
 
         training_data, pipeline = self.featurize(
             data, 
@@ -655,11 +698,6 @@ class Box:
 
 
 
-
-    def clear_score_cache(self):
-        """Invalidate reference diagnostics after external mutation."""
-        from ..scorers.cache import invalidate_score_cache
-        invalidate_score_cache(self)
 
     def _training_reference(self):
         """Return fitted training rows, retaining raw columns."""

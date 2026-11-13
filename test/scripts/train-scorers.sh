@@ -18,6 +18,7 @@ command -v treeton >/dev/null || {
 }
 script_dir=$(readlink -f $(dirname "$0"))
 workdir=$(readlink -f "$script_dir"/..)/outputs/hash
+mkdir -p "$workdir"
 
 echo "[1/5] Creating datasets and configuration"
 
@@ -75,6 +76,15 @@ cat > "$workdir/experiment.json" <<'JSON'
   },
   "fit": {
     "skip_eval": true
+  },
+  "save": {
+    "score": {
+      "leaf_percentile": {
+        "class_path": "treeton.scorers.leaves.InverseLeafOccupancy",
+        "init_args": {"normalization": "reference_percentile"}
+      },
+      "euclidean_distance": "euclidean_distance"
+    }
   }
 }
 JSON
@@ -97,7 +107,6 @@ echo "[2/5] Training and saving ensemble"
 
 treeton train "$workdir/train.csv" \
     --config "$workdir/experiment.json" \
-    --cache-leaf-reference \
     --checkpoint "$workdir/model.tt"
 
 test -d "$workdir/model.tt" || {

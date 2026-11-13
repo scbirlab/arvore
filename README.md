@@ -375,7 +375,37 @@ A `Box` checkpoint retains the fitted model, model configuration, fitted preproc
 
 Depending on the data source and checkpoint settings, training data may be stored directly or retained by reference.
 
-Reference-based prediction scorers depend on the original training data remaining accessible.
+Reference-based prediction scorers prepare their training references lazily and
+reuse them on the fitted Box. Prepared references are saved automatically with
+the next Box checkpoint, and restored without recomputing their source features.
+
+```python
+# Prediction computes the Euclidean reference index only once.
+box.predict(candidates, score=["euclidean_distance", "tree_sd"])
+box.predict(more_candidates, score="euclidean_distance")
+
+# Saves the already-prepared Euclidean reference and also prepares the two
+# additional scorers' reference resources before checkpointing.
+box.save(
+    "model.tt",
+    score=["tanimoto_distance", "inverse_leaf_occupancy"],
+)
+
+box = Box.load("model.tt", trusted_types=("sklearn.tree._tree.Tree",))
+box.predict(new_candidates, score="tanimoto_distance")
+```
+
+For the CLI, set `save.score` in your training configuration to an array of
+scorer names or a mapping of output aliases to scorer names or configured
+`class_path` objects. This replaces the old `--cache-leaf-reference` switch.
+
+After externally mutating the fitted estimator or training data, call
+`box.references.clear()`. Concurrent read-only predictions can safely reuse
+references; **do not call `fit()` concurrently with prediction or saving**.
+
+References are contained in the Box's fitted checkpoint. Prediction does not
+write reference resources to disk. Resource archives are NumPy/JSON without
+pickle, are checksummed, and are verified against the saved fitted state.
 
 Treeton uses native model formats when supported and skops for scikit-learn estimators. Loading some sklearn checkpoints requires explicitly trusting their internal tree types.
 
@@ -454,7 +484,7 @@ pytest --doctest-modules -q treeton
 Run the end-to-end CLI scorer smoke test:
 
 ```bash
-bash test/smoke_scorers.sh
+bash test/scripts/train-scorers.sh
 ```
 
 ### Project components
