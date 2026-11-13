@@ -2,8 +2,8 @@
 
 import pytest
 
-from treeton.cli.scoring import parse_scorer, resolve_cli_scores
-from treeton.scorers import (
+from arvore.cli.scoring import parse_scorer, resolve_cli_scores
+from arvore.scorers import (
     EnsembleSD,
     FeatureDistance,
     TanimotoDistance,
@@ -74,7 +74,7 @@ def test_config_strings_and_lists():
 def test_existing_class_path_configuration():
     config = {
         "novelty": {
-            "class_path": "treeton.scorers.tanimoto.TanimotoDistance",
+            "class_path": "arvore.scorers.tanimoto.TanimotoDistance",
             "init_args": {
                 "n_neighbors": 4,
                 "return_var": True,

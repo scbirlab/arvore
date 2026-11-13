@@ -6,7 +6,7 @@ import pytest
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.datasets import make_regression
 
-from treeton.models import (
+from arvore.models import (
     SklearnAdapter,
     XGBoostAdapter,
     LightGBMAdapter,

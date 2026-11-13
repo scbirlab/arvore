@@ -10,10 +10,10 @@ from sklearn.ensemble import (
     RandomForestRegressor,
 )
 
-from treeton import Box, Ensemble
-from treeton.models.adapters import get_adapter
-from treeton.scorers import InverseLeafOccupancy
-from treeton.scorers.leaves import LeafReferenceBuilder
+from arvore import Box, Ensemble
+from arvore.models.adapters import get_adapter
+from arvore.scorers import InverseLeafOccupancy
+from arvore.scorers.leaves import LeafReferenceBuilder
 
 
 def test_percentile_midrank_ties():

@@ -1,19 +1,19 @@
 
-# 🌳 Treeton
+# 🌳 Arvore
 
-![GitHub Actions](https://img.shields.io/github/actions/workflow/status/scbirlab/treeton/python-test.yml)
-![Python versions](https://img.shields.io/pypi/pyversions/treeton)
-![PyPI](https://img.shields.io/pypi/v/treeton)
+![GitHub Actions](https://img.shields.io/github/actions/workflow/status/scbirlab/arvore/python-test.yml)
+![Python versions](https://img.shields.io/pypi/pyversions/arvore)
+![PyPI](https://img.shields.io/pypi/v/arvore)
 
-**Treeton makes it straightforward to train, evaluate, checkpoint and share machine-learning models.**
+**Arvore makes it straightforward to train, evaluate, checkpoint and share machine-learning models.**
 
 It provides a common interface for scikit-learn-compatible estimators, including random forests, XGBoost, LightGBM and CatBoost. Models can be combined into ensembles, trained using reproducible configurations and restored with their feature preprocessing and training-data provenance.
 
-Treeton also supports **prediction diagnostics**, such as ensemble disagreement, tree-based uncertainty and distance from previously observed data.
+Arvore also supports **prediction diagnostics**, such as ensemble disagreement, tree-based uncertainty and distance from previously observed data.
 
 Use it from Python or the command line, including for experiments running on HPC systems.
 
-Treeton is in alpha development and currently focuses on numeric regression.
+Arvore is in alpha development and currently focuses on numeric regression.
 
 ## Features
 
@@ -24,36 +24,36 @@ Treeton is in alpha development and currently focuses on numeric regression.
 - **Run reproducible experiments.** Define models and preprocessing in JSON, with command-line overrides.
 - **Work with large datasets.** Use batched prediction and checkpointed datasets.
 
-Treeton uses [Aspect](https://github.com/scbirlab/aspect) for data transformations and [Providence](https://github.com/scbirlab/providence) for data loading and provenance.
+Arvore uses [Aspect](https://github.com/scbirlab/aspect) for data transformations and [Providence](https://github.com/scbirlab/providence) for data loading and provenance.
 
 ## Installation
 
 Python 3.11 or later is required.
 
 ```bash
-pip install treeton
+pip install arvore
 ```
 
 For the latest development version:
 
 ```bash
-pip install "git+https://github.com/scbirlab/treeton.git@dev"
+pip install "git+https://__PRESERVE_ARVORE_REPO_URL__.git@dev"
 ```
 
 Install optional model backends or chemistry support as needed:
 
 ```bash
-pip install "treeton[trees]"  # XGBoost and LightGBM
-pip install "treeton[cat]"    # CatBoost
-pip install "treeton[chem]"   # Molecular fingerprints and descriptors
-pip install "treeton[bio]"    # Biological feature tools
+pip install "arvore[trees]"  # XGBoost and LightGBM
+pip install "arvore[cat]"    # CatBoost
+pip install "arvore[chem]"   # Molecular fingerprints and descriptors
+pip install "arvore[bio]"    # Biological feature tools
 ```
 
 ## Quick start
 
 ### 1. Prepare some data
 
-Treeton accepts datasets in formats supported by Providence, including CSV and Parquet.
+Arvore accepts datasets in formats supported by Providence, including CSV and Parquet.
 
 For a small example:
 
@@ -92,9 +92,9 @@ The configuration defines which model to train, which columns to use and how the
 ### 3. Train and save
 
 ```bash
-treeton train train.csv \
+arvore train train.csv \
     --config experiment.json \
-    --checkpoint model.tt
+    --checkpoint model.ao
 ```
 
 The checkpoint stores the fitted model alongside its configuration, preprocessing and training-data information.
@@ -102,7 +102,7 @@ The checkpoint stores the fitted model alongside its configuration, preprocessin
 ### 4. Make predictions
 
 ```bash
-treeton predict model.tt \
+arvore predict model.ao \
     --trust-sklearn-trees \
     --data candidates.csv \
     --output predictions.csv
@@ -115,7 +115,7 @@ The output contains the original data and a `prediction:y` column.
 ### 5. Add prediction diagnostics
 
 ```bash
-treeton predict model.tt \
+arvore predict model.ao \
     --trust-sklearn-trees \
     --data candidates.csv \
     --score tree_sd inverse_leaf_occupancy feature_distance \
@@ -132,7 +132,7 @@ These help identify predictions made with greater model disagreement or farther 
 
 ## Prediction scoring
 
-Treeton can calculate multiple uncertainty and novelty diagnostics in the same prediction run.
+Arvore can calculate multiple uncertainty and novelty diagnostics in the same prediction run.
 
 | Scorer | What it measures |
 | --- | --- |
@@ -149,8 +149,8 @@ These quantities have different scales and interpretations. **They are diagnosti
 ### Python API
 
 ```python
-from treeton import Box
-from treeton.scorers import InverseLeafOccupancy
+from arvore import Box
+from arvore.scorers import InverseLeafOccupancy
 
 box = Box.from_config({
     "model": {
@@ -200,10 +200,10 @@ The resulting score columns use those names.
 
 ### Molecular similarity
 
-Treeton can estimate chemical novelty using the Tanimoto distance between binary molecular fingerprints.
+Arvore can estimate chemical novelty using the Tanimoto distance between binary molecular fingerprints.
 
 ```python
-from treeton.scorers import TanimotoDistance
+from arvore.scorers import TanimotoDistance
 
 results = box.predict(
     "compounds.csv",
@@ -221,7 +221,7 @@ The molecular fingerprint need not be one of the model's predictive features.
 Install chemistry support with:
 
 ```bash
-pip install "treeton[chem]"
+pip install "arvore[chem]"
 ```
 
 Exact nearest-reference similarity is used by default. Large reference libraries can make this calculation expensive.
@@ -235,7 +235,7 @@ For parameterised scorers, create a prediction configuration such as `predict.js
   "batch_size": 128,
   "score": {
     "leaf_percentile": {
-      "class_path": "treeton.scorers.leaves.InverseLeafOccupancy",
+      "class_path": "arvore.scorers.leaves.InverseLeafOccupancy",
       "init_args": {
         "normalization": "reference_percentile"
       }
@@ -248,7 +248,7 @@ For parameterised scorers, create a prediction configuration such as `predict.js
 Then run:
 
 ```bash
-treeton predict model.tt \
+arvore predict model.ao \
     --trust-sklearn-trees \
     --data candidates.csv \
     --config predict.json \
@@ -260,7 +260,7 @@ Scorers from the configuration and command line are combined. Custom scorer clas
 
 ## Ensembles
 
-Treeton supports ensembles of repeated models and mixtures of different estimator types.
+Arvore supports ensembles of repeated models and mixtures of different estimator types.
 
 ### Repeated models
 
@@ -280,7 +280,7 @@ To train an ensemble of five random forests, use this model configuration inside
 }
 ```
 
-Treeton constructs separately seeded members and averages their predictions.
+Arvore constructs separately seeded members and averages their predictions.
 
 ### Mixed models
 
@@ -289,7 +289,7 @@ Different estimators can also be combined:
 ```python
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
-from treeton import Ensemble
+from arvore import Ensemble
 
 model = Ensemble(
     {
@@ -320,7 +320,7 @@ Ensembles currently share one feature representation across their members.
 Use `--disaggregate` from the CLI:
 
 ```bash
-treeton predict ensemble.tt \
+arvore predict ensemble.ao \
     --trust-sklearn-trees \
     --data candidates.csv \
     --score ensemble_sd \
@@ -337,7 +337,7 @@ In Python, use `model.predict_members(X)` or `box.predict(..., disaggregate=True
 ### Python workflow
 
 ```python
-from treeton import Box
+from arvore import Box
 
 box = Box.from_config({
     "model": {
@@ -350,10 +350,10 @@ box = Box.from_config({
 })
 
 box.fit("train.csv", skip_eval=True)
-box.save("model.tt")
+box.save("model.ao")
 
 restored = Box.load(
-    "model.tt",
+    "model.ao",
     trusted_types=("sklearn.tree._tree.Tree",)
 )
 
@@ -387,11 +387,11 @@ box.predict(more_candidates, score="feature_distance")
 # Saves the already-prepared Euclidean reference and also prepares the two
 # additional scorers' reference resources before checkpointing.
 box.save(
-    "model.tt",
+    "model.ao",
     score=["tanimoto_distance", "inverse_leaf_occupancy"],
 )
 
-box = Box.load("model.tt", trusted_types=("sklearn.tree._tree.Tree",))
+box = Box.load("model.ao", trusted_types=("sklearn.tree._tree.Tree",))
 box.predict(new_candidates, score="tanimoto_distance")
 ```
 
@@ -407,7 +407,7 @@ References are contained in the Box's fitted checkpoint. Prediction does not
 write reference resources to disk. Resource archives are NumPy/JSON without
 pickle, are checksummed, and are verified against the saved fitted state.
 
-Treeton uses native model formats when supported and skops for scikit-learn estimators. Loading some sklearn checkpoints requires explicitly trusting their internal tree types.
+Arvore uses native model formats when supported and skops for scikit-learn estimators. Loading some sklearn checkpoints requires explicitly trusting their internal tree types.
 
 Only load checkpoints from sources you trust. Unsafe joblib serialization is available as an explicit fallback for otherwise unsupported estimators.
 
@@ -415,7 +415,7 @@ Only load checkpoints from sources you trust. Unsafe joblib serialization is ava
 
 ### Feature transformations
 
-Treeton delegates preprocessing to Aspect.
+Arvore delegates preprocessing to Aspect.
 
 For example, a pipeline can create a transformed feature:
 
@@ -436,9 +436,9 @@ Aspect supports other numerical, categorical, chemical and biological transforma
 CLI options can override experiment configuration without editing JSON files:
 
 ```bash
-treeton train train.csv \
+arvore train train.csv \
     --config experiment.json \
-    --checkpoint model.tt \
+    --checkpoint model.ao \
     --set box.model.init_args.n_estimators=500
 ```
 
@@ -469,8 +469,8 @@ This supports integration with third-party uncertainty and novelty methods.
 Clone the repository and install development dependencies:
 
 ```bash
-git clone https://github.com/scbirlab/treeton.git
-cd treeton
+git clone https://__PRESERVE_ARVORE_REPO_URL__.git
+cd arvore
 pip install -e ".[dev]"
 ```
 
@@ -478,7 +478,7 @@ Run the Python tests:
 
 ```bash
 pytest -q
-pytest --doctest-modules -q treeton
+pytest --doctest-modules -q arvore
 ```
 
 Run the end-to-end CLI scorer smoke test:
@@ -512,4 +512,4 @@ The current implementation focuses on regression and exact reference-distance ca
 
 ## License
 
-MIT. See [LICENSE](https://github.com/scbirlab/treeton/blob/main/LICENSE).
+MIT. See [LICENSE](https://__PRESERVE_ARVORE_REPO_URL__/blob/main/LICENSE).

@@ -7,9 +7,9 @@ import pytest
 from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 
-from treeton import Box, Ensemble
-from treeton.scorers import TanimotoDistance
-from treeton.scorers.tanimoto import TanimotoReference
+from arvore import Box, Ensemble
+from arvore.scorers import TanimotoDistance
+from arvore.scorers.tanimoto import TanimotoReference
 
 
 def brute_force_distance(queries, references):

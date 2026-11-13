@@ -7,8 +7,8 @@ import pytest
 from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 
-from treeton import Box
-from treeton.config.instantiate import (
+from arvore import Box
+from arvore.config.instantiate import (
     load_training_config,
     resolve_experiment_config,
 )
@@ -83,7 +83,7 @@ def test_checkpoint_training_config_roundtrip(
     box = Box.from_config(BOX_SPEC)
     box.fit(training_data, skip_eval=True)
 
-    checkpoint = tmp_path / "original.tt"
+    checkpoint = tmp_path / "original.ao"
     box.save(checkpoint)
 
     manifest = json.loads(
@@ -103,7 +103,7 @@ def test_checkpoint_training_config_roundtrip(
     assert fresh.to_config() == box.to_config()
 
     fresh.fit(training_data, skip_eval=True)
-    next_checkpoint = tmp_path / "retrained.tt"
+    next_checkpoint = tmp_path / "retrained.ao"
     fresh.save(next_checkpoint)
 
     assert load_training_config(next_checkpoint) == experiment
@@ -115,7 +115,7 @@ def test_checkpoint_manifest_and_standalone_config(
     box = Box.from_config(BOX_SPEC)
     box.fit(training_data, skip_eval=True)
 
-    checkpoint = tmp_path / "model.tt"
+    checkpoint = tmp_path / "model.ao"
     box.save(checkpoint)
 
     assert load_training_config(
@@ -144,7 +144,7 @@ def test_checkpoint_model_override(training_data, tmp_path):
     box = Box.from_config(BOX_SPEC)
     box.fit(training_data, skip_eval=True)
 
-    checkpoint = tmp_path / "model.tt"
+    checkpoint = tmp_path / "model.ao"
     box.save(checkpoint)
 
     experiment = resolve_experiment_config(
@@ -189,7 +189,7 @@ def test_opaque_checkpoint_requires_model_spec(
     )
     box.fit(training_data, skip_eval=True)
 
-    checkpoint = tmp_path / "opaque.tt"
+    checkpoint = tmp_path / "opaque.ao"
     box.save(checkpoint)
 
     experiment = load_training_config(checkpoint)

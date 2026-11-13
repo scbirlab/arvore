@@ -110,7 +110,7 @@ def apply_overrides(
 def model_aliases() -> tuple[str, ...]:
     """Return bundled model configuration aliases."""
 
-    model_dir = files("treeton").joinpath(
+    model_dir = files("arvore").joinpath(
         "data",
         "models",
     )
@@ -130,7 +130,7 @@ def load_model_alias(
     """Load a bundled model configuration."""
 
     path = (
-        files("treeton")
+        files("arvore")
         .joinpath(
             "data",
             "models",
@@ -222,5 +222,5 @@ def load_training_config(source):
 
     raise ValueError(
         "Expected an experiment config, a Box construction config, "
-        "or a Treeton checkpoint manifest"
+        "or a Arvore checkpoint manifest"
     )

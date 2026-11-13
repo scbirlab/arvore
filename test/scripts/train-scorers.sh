@@ -10,10 +10,10 @@ set -euox pipefail
 #   bash test/smoke_scorers.sh
 #
 # All work is done in a temporary directory.
-# The test calls the installed `treeton` executable directly.
+# The test calls the installed `arvore` executable directly.
 
-command -v treeton >/dev/null || {
-    echo "ERROR: treeton executable not found" >&2
+command -v arvore >/dev/null || {
+    echo "ERROR: arvore executable not found" >&2
     exit 1
 }
 script_dir=$(readlink -f $(dirname "$0"))
@@ -81,7 +81,7 @@ cat > "$workdir/experiment.json" <<'JSON'
   "save": {
     "score": {
       "leaf_percentile": {
-        "class_path": "treeton.scorers.leaves.InverseLeafOccupancy",
+        "class_path": "arvore.scorers.leaves.InverseLeafOccupancy",
         "init_args": {"normalization": "reference_percentile"}
       },
       "feature_distance": "feature_distance"
@@ -95,7 +95,7 @@ cat > "$workdir/predict.json" <<'JSON'
   "batch_size": 2,
   "score": {
     "leaf_percentile": {
-      "class_path": "treeton.scorers.leaves.InverseLeafOccupancy",
+      "class_path": "arvore.scorers.leaves.InverseLeafOccupancy",
       "init_args": {
         "normalization": "reference_percentile"
       }
@@ -106,19 +106,19 @@ JSON
 
 echo "[2/5] Training and saving ensemble"
 
-treeton train "$workdir/train.csv" \
+arvore train "$workdir/train.csv" \
     --config "$workdir/experiment.json" \
     --cache "$workdir/cache" \
-    --checkpoint "$workdir/model.tt"
+    --checkpoint "$workdir/model.ao"
 
-test -d "$workdir/model.tt" || {
+test -d "$workdir/model.ao" || {
     echo "ERROR: checkpoint directory missing" >&2
     exit 1
 }
 
 echo "[3/5] Predicting with configured and CLI scorers"
 
-treeton predict "$workdir/model.tt" \
+arvore predict "$workdir/model.ao" \
     --trust-sklearn-trees \
     --data "$workdir/candidates.csv" \
     --config "$workdir/predict.json" \
@@ -163,7 +163,7 @@ echo "[5/5] Testing Tanimoto SMILES fingerprint generation"
 
 # Parquet is used because the generated fingerprint is an
 # array-valued column, which is not naturally CSV-compatible.
-treeton predict "$workdir/model.tt" \
+arvore predict "$workdir/model.ao" \
     --trust-sklearn-trees \
     --cache "$workdir/cache" \
     --data "$workdir/candidates.csv" \
@@ -176,4 +176,4 @@ test -s "$workdir/tanimoto.parquet" || {
 }
 
 echo
-echo "PASS: treeton CLI scorer smoke test"
+echo "PASS: arvore CLI scorer smoke test"

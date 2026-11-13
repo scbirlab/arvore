@@ -13,11 +13,11 @@ import pytest
 from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 
-from treeton import Box
-from treeton.scorers import EnsembleSD, InverseLeafOccupancy, TanimotoDistance
-from treeton.scorers.distances import FeatureReference
-from treeton.scorers.references import ReferenceCache, reference_key
-from treeton.scorers.runner import ScoringRunner
+from arvore import Box
+from arvore.scorers import EnsembleSD, InverseLeafOccupancy, TanimotoDistance
+from arvore.scorers.distances import FeatureReference
+from arvore.scorers.references import ReferenceCache, reference_key
+from arvore.scorers.runner import ScoringRunner
 
 
 @pytest.fixture
@@ -83,14 +83,14 @@ def test_save_prepared_references_automatically(fitted_box, tmp_path):
         "feature_distance", "inverse_leaf_occupancy", "tanimoto_distance",
     ])
     count = len(box.references.snapshot())
-    path = tmp_path / "model.tt"
+    path = tmp_path / "model.ao"
     box.save(path)
     restored = _load(path)
     assert len(restored.references.snapshot()) == count
 
     # The restored Tanimoto/leaf references must be used directly. A
     # Euclidean NN estimator may be rebuilt from its persisted feature array.
-    from treeton.scorers.tanimoto import TanimotoDistance as TD
+    from arvore.scorers.tanimoto import TanimotoDistance as TD
     original_prepare = TD.prepare_reference
     try:
         TD.prepare_reference = lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -111,7 +111,7 @@ def test_save_prepared_references_automatically(fitted_box, tmp_path):
 
 def test_explicit_prepare_on_save(fitted_box, tmp_path):
     box, data = fitted_box
-    path = tmp_path / "model.tt"
+    path = tmp_path / "model.ao"
     box.save(path, score=[
         TanimotoDistance(column="fingerprint", query_chunk=1),
         InverseLeafOccupancy(normalization="reference_percentile"),
@@ -193,7 +193,7 @@ def test_keys_are_canonical_and_not_alias_based():
 
 def test_corruption_and_incompatible_metadata(fitted_box, tmp_path):
     box, _ = fitted_box
-    path = tmp_path / "model.tt"
+    path = tmp_path / "model.ao"
     box.save(path, score="feature_distance")
     config_path = path / "config.json"
     manifest = json.loads(config_path.read_text())
@@ -214,7 +214,7 @@ def test_corruption_and_incompatible_metadata(fitted_box, tmp_path):
 
 def test_modified_fitted_box_config_rejected(fitted_box, tmp_path):
     box, _ = fitted_box
-    path = tmp_path / "model.tt"
+    path = tmp_path / "model.ao"
     box.save(path, score="feature_distance")
     manifest_path = path / "config.json"
     manifest = json.loads(manifest_path.read_text())
@@ -240,8 +240,8 @@ def test_explicit_nonpersistable_reference_rejected(fitted_box, tmp_path):
             return np.zeros(len(context.X))
 
     with pytest.raises(ValueError, match="safe persistence codec"):
-        box.save(tmp_path / "no.tt", score=UnsafeReferenceScorer())
-    assert not (tmp_path / "no.tt").exists()
+        box.save(tmp_path / "no.ao", score=UnsafeReferenceScorer())
+    assert not (tmp_path / "no.ao").exists()
 
 
 def test_ensemble_sd_warns_only_if_everything_zero():
@@ -263,7 +263,7 @@ def test_ensemble_sd_warns_only_if_everything_zero():
 def test_default_xgboost_repeat_zero_spread_warning():
     xgboost = pytest.importorskip("xgboost")
     from types import SimpleNamespace
-    from treeton import Ensemble
+    from arvore import Ensemble
 
     rng = np.random.default_rng(123)
     X = rng.normal(size=(80, 2))
@@ -290,7 +290,7 @@ def test_default_xgboost_repeat_zero_spread_warning():
 
 
 def test_tanimoto_numpy2_matches_brute_force():
-    from treeton.scorers.tanimoto import TanimotoReference
+    from arvore.scorers.tanimoto import TanimotoReference
 
     rng = np.random.default_rng(123)
     references = rng.integers(0, 2, (37, 130), dtype=np.uint8)
@@ -336,7 +336,7 @@ def test_tanimoto_numpy2_matches_brute_force():
 
 
 def test_euclidean_k_neighbours():
-    from treeton.scorers.distances import FeatureReference
+    from arvore.scorers.distances import FeatureReference
 
     reference = FeatureReference.build(
         np.array([[0.0], [2.0], [5.0]])
@@ -354,7 +354,7 @@ def test_euclidean_k_neighbours():
 
 
 def test_neighbour_count_does_not_duplicate_references(fitted_box):
-    from treeton.scorers.distances import FeatureDistance
+    from arvore.scorers.distances import FeatureDistance
 
     box, data = fitted_box
 
@@ -396,7 +396,7 @@ def test_neighbour_count_does_not_duplicate_references(fitted_box):
 
 
 def test_reference_cache_retains_specification():
-    from treeton.scorers.references import (
+    from arvore.scorers.references import (
         ReferenceCache, reference_key,
     )
 
@@ -420,7 +420,7 @@ def test_reference_cache_retains_specification():
 
 def test_save_tracks_actual_reference_requests(fitted_box, tmp_path):
     """A scorer need not separately declare its reference keys."""
-    from treeton.scorers.distances import FeatureDistance
+    from arvore.scorers.distances import FeatureDistance
 
     box, data = fitted_box
 
@@ -435,7 +435,7 @@ def test_save_tracks_actual_reference_requests(fitted_box, tmp_path):
         def __call__(self, context):
             return context.state.distance(context.X)
 
-    path = tmp_path / "tracked.tt"
+    path = tmp_path / "tracked.ao"
 
     # First request prepares the resource.
     box.save(path, score=CustomDistance())
@@ -458,7 +458,7 @@ def test_save_without_reference_persistence(fitted_box, tmp_path):
     _predict(box, data, "feature_distance")
     assert len(box.references.snapshot()) == 1
 
-    path = tmp_path / "no_references.tt"
+    path = tmp_path / "no_references.ao"
 
     box.save(path, save_references=False)
 
@@ -483,14 +483,14 @@ def test_skip_ref_save_does_not_prepare_scores(
 ):
     box, _ = fitted_box
 
-    from treeton.scorers.distances import FeatureReference
+    from arvore.scorers.distances import FeatureReference
 
     def fail(*args, **kwargs):
         raise AssertionError("Reference should not be prepared")
 
     monkeypatch.setattr(FeatureReference, "build", fail)
 
-    path = tmp_path / "skip_prepare.tt"
+    path = tmp_path / "skip_prepare.ao"
 
     box.save(
         path,
@@ -507,7 +507,7 @@ def test_default_reference_persistence_unchanged(
     fitted_box, tmp_path
 ):
     box, _ = fitted_box
-    path = tmp_path / "default_references.tt"
+    path = tmp_path / "default_references.ao"
 
     box.save(path, score="feature_distance")
 
@@ -523,7 +523,7 @@ def test_skip_ref_save_overwrites_existing_reference_checkpoint(
     fitted_box, tmp_path
 ):
     box, _ = fitted_box
-    path = tmp_path / "overwrite.tt"
+    path = tmp_path / "overwrite.ao"
 
     box.save(path, score="feature_distance")
     assert (path / "references").exists()
@@ -544,8 +544,8 @@ def test_save_references_rejects_nonboolean(fitted_box, tmp_path):
 
     with pytest.raises(TypeError, match="boolean"):
         box.save(
-            tmp_path / "invalid.tt",
+            tmp_path / "invalid.ao",
             save_references="false",
         )
 
-    assert not (tmp_path / "invalid.tt").exists()
+    assert not (tmp_path / "invalid.ao").exists()

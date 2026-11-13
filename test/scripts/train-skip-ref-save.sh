@@ -8,17 +8,17 @@ bash "$script_dir"/train-scorers.sh "$OUTPUT_DIR"
 
 workdir="$OUTPUT_DIR"
 
-treeton train "$workdir/train.csv" \
+arvore train "$workdir/train.csv" \
     --config "$workdir/experiment.json" \
     --cache "$workdir/cache" \
-    --checkpoint "$workdir/model-no-refs.tt" \
+    --checkpoint "$workdir/model-no-refs.ao" \
     --skip-ref-save
 
 python -c '
 import json
 from pathlib import Path
 
-path = Path("'"$OUTPUT_DIR"'/model-no-refs.tt")
+path = Path("'"$OUTPUT_DIR"'/model-no-refs.ao")
 manifest = json.loads((path / "config.json").read_text())
 
 assert "references" not in manifest["artefacts"]
@@ -28,7 +28,7 @@ assert (path / manifest["artefacts"]["training_data"]).exists()
 print("PASS: CLI omitted references but retained training data")
 '
 
-treeton predict "$workdir/model-no-refs.tt" \
+arvore predict "$workdir/model-no-refs.ao" \
     --trust-sklearn-trees \
     --cache "$workdir/cache" \
     --data "$workdir/candidates.csv" \

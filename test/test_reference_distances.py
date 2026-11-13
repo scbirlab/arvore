@@ -6,10 +6,10 @@ from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import pairwise_distances
 
-from treeton import Box
-from treeton.scorers import FeatureDistance, TanimotoDistance
-from treeton.scorers.distances import FeatureReference
-from treeton.scorers.tanimoto import TanimotoReference
+from arvore import Box
+from arvore.scorers import FeatureDistance, TanimotoDistance
+from arvore.scorers.distances import FeatureReference
+from arvore.scorers.tanimoto import TanimotoReference
 
 
 @pytest.fixture
@@ -265,7 +265,7 @@ def test_checkpoint_preserves_features_and_labels(
 
     before = predict(box, data, scorers)
 
-    path = tmp_path / "distance_model.tt"
+    path = tmp_path / "distance_model.ao"
     box.save(path)
     restored = load(path)
 
@@ -299,7 +299,7 @@ def test_explicit_save_prepares_neighbor_labels(
     fitted_box, tmp_path
 ):
     box, data = fitted_box
-    path = tmp_path / "explicit.tt"
+    path = tmp_path / "explicit.ao"
 
     box.save(
         path,
@@ -523,7 +523,7 @@ def test_variance_checkpoint_roundtrip(fitted_box, tmp_path):
 
     before = predict(box, data, scorers)
 
-    path = tmp_path / "variance.tt"
+    path = tmp_path / "variance.ao"
     box.save(path)
     restored = load(path)
     after = predict(restored, data, scorers)

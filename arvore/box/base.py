@@ -555,7 +555,7 @@ class Box:
         else:
             if schema != cls.SCHEMA_VERSION:
                 raise ValueError(
-                    "Unsupported Treeton checkpoint schema: "
+                    "Unsupported Arvore checkpoint schema: "
                     f"{manifest['schema_version']}, but package is schema version {cls.SCHEMA_VERSION}"
                 )
             model = load_model(

@@ -7,9 +7,9 @@ import pytest
 from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 
-from treeton import Box, Ensemble
-from treeton.scorers import FeatureDistance
-from treeton.scorers.distances import FeatureReference
+from arvore import Box, Ensemble
+from arvore.scorers import FeatureDistance
+from arvore.scorers.distances import FeatureReference
 
 
 @pytest.fixture

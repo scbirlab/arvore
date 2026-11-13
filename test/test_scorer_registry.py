@@ -2,13 +2,13 @@
 
 import pytest
 
-from treeton.scorers import (
+from arvore.scorers import (
     EnsembleSD,
     TanimotoDistance,
     TreeSD,
     resolve_scorers,
 )
-from treeton.scorers.runner import ScoringRunner
+from arvore.scorers.runner import ScoringRunner
 
 
 def test_none_resolves_to_empty_mapping():
