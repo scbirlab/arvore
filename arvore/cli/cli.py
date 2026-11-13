@@ -1,4 +1,4 @@
-"""Command-line interface for treeton."""
+"""Command-line interface for arvore."""
 
 from carabiner.cliutils import (
     CLIApp,

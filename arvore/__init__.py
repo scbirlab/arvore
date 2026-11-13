@@ -1,7 +1,7 @@
 """Tree-based learning with reproducible data preparation."""
 from importlib.metadata import version
 
-app_name = "treeton"
+app_name = "arvore"
 __author__ = "Eachan Johnson"
 __version__ = version(app_name)
 

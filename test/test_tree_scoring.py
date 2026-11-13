@@ -8,8 +8,8 @@ from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 
-from treeton import Box, Ensemble
-from treeton.models.adapters import get_adapter
+from arvore import Box, Ensemble
+from arvore.models.adapters import get_adapter
 
 
 @pytest.fixture

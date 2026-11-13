@@ -8,17 +8,17 @@ bash "$script_dir"/train-scorers.sh "$OUTPUT_DIR"
 
 workdir="$OUTPUT_DIR"
 
-treeton train "$workdir/train.csv" \
-    --config "$workdir/model.tt" \
+arvore train "$workdir/train.csv" \
+    --config "$workdir/model.ao" \
     --cache "$workdir/cache" \
-    --checkpoint "$workdir/retrained.tt" \
+    --checkpoint "$workdir/retrained.ao" \
     --set box.model.base.init_args.n_estimators=17
 
 python -c '
 import json
 from pathlib import Path
 
-path = Path("'"$OUTPUT_DIR"'/retrained.tt/config.json")
+path = Path("'"$OUTPUT_DIR"'/retrained.ao/config.json")
 manifest = json.loads(path.read_text())
 
 model = manifest["config"]["model"]

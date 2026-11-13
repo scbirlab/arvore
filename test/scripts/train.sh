@@ -39,16 +39,16 @@ printf \
 > "$CONFIG"
 
 HF_HOME="$CACHE" \
-treeton train \
+arvore train \
     "$TEST" \
     -2 "$TRAIN" \
     --config "$CONFIG" \
-    --checkpoint "$OUTPUT/model.tt" \
+    --checkpoint "$OUTPUT/model.ao" \
     --cache "$CACHE"
 
 HF_HOME="$CACHE" \
-treeton predict \
-    "$OUTPUT/model.tt" \
+arvore predict \
+    "$OUTPUT/model.ao" \
     --trust-sklearn-trees \
     --data "$TRAIN" \
     --start "$START" \

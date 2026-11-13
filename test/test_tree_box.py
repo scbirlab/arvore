@@ -4,7 +4,7 @@ import subprocess
 import numpy as np
 from datasets import Dataset
 
-from treeton import Box
+from arvore import Box
 
 
 def make_data(tmp_path):
@@ -53,7 +53,7 @@ def test_box_checkpoint_roundtrip(tmp_path):
         box.predict(str(testing))["prediction:y"]
     )
 
-    checkpoint = tmp_path / "model.tt"
+    checkpoint = tmp_path / "model.ao"
     box.save(checkpoint)
 
     assert (checkpoint / "config.json").is_file()
@@ -82,12 +82,12 @@ def test_cli_train_predict(tmp_path):
         "box": make_config(),
     }))
 
-    checkpoint = tmp_path / "model.tt"
+    checkpoint = tmp_path / "model.ao"
     output = tmp_path / "predictions.parquet"
 
     subprocess.run(
         [
-            "treeton", "train", str(training),
+            "arvore", "train", str(training),
             "--config", str(config_path),
             "--checkpoint", str(checkpoint),
         ],
@@ -96,7 +96,7 @@ def test_cli_train_predict(tmp_path):
 
     subprocess.run(
         [
-            "treeton", "predict", str(checkpoint),
+            "arvore", "predict", str(checkpoint),
             "--trust-sklearn-trees",
             "--data", str(testing),
             "--output", str(output),
@@ -181,7 +181,7 @@ def test_backend_box_fit(
 
 def test_box_model_config_delegation():
     from sklearn.ensemble import RandomForestRegressor
-    from treeton import Ensemble
+    from arvore import Ensemble
 
     config = {
         "kind": "ensemble",

@@ -5,7 +5,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from treeton.config import (
+from arvore.config import (
     EstimatorConfig,
     EnsembleConfig,
     ModelArtifact,

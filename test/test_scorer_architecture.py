@@ -8,13 +8,13 @@ import pytest
 from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 
-from treeton import Box, Ensemble
-from treeton.scorers import (
+from arvore import Box, Ensemble
+from arvore.scorers import (
     FeatureDistance,
     InverseLeafOccupancy,
     TanimotoDistance,
 )
-from treeton.scorers.base import Requirements
+from arvore.scorers.base import Requirements
 
 
 @pytest.fixture

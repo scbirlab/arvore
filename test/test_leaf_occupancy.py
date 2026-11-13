@@ -10,9 +10,9 @@ from sklearn.ensemble import (
     RandomForestRegressor,
 )
 
-from treeton import Box, Ensemble
-from treeton.models.adapters import get_adapter
-from treeton.scorers.leaves import (
+from arvore import Box, Ensemble
+from arvore.models.adapters import get_adapter
+from arvore.scorers.leaves import (
     LeafReferenceBuilder,
 )
 
@@ -222,7 +222,7 @@ def test_reference_prepared_once(
     _, _, train, test, models = datasets_and_models
     box = make_box(models["rf"], train, test)
 
-    from treeton.models.adapters import SklearnAdapter
+    from arvore.models.adapters import SklearnAdapter
 
     original = SklearnAdapter.leaf_indices
     calls = []

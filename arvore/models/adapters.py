@@ -496,7 +496,7 @@ class CatBoostAdapter(SklearnAdapter):
         estimator.fit(X, y, **kw)
 
 
-@register_adapter(name="ensemble", ext="json", package="treeton")
+@register_adapter(name="ensemble", ext="json", package="arvore")
 class EnsembleAdapter(SklearnAdapter):
 
     def adapter_name(self, estimator, *, allow_unsafe=False):
