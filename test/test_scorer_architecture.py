@@ -10,7 +10,7 @@ from sklearn.ensemble import RandomForestRegressor
 
 from treeton import Box, Ensemble
 from treeton.scorers import (
-    EuclideanDistance,
+    FeatureDistance,
     InverseLeafOccupancy,
     TanimotoDistance,
 )
@@ -144,7 +144,7 @@ def test_scoring_does_not_change_predictions(example):
                 "ensemble_sd",
                 "tree_sd",
                 "inverse_leaf_occupancy",
-                "euclidean_distance",
+                "feature_distance",
                 "tanimoto_distance",
             ],
         )
@@ -167,7 +167,7 @@ def test_scoring_does_not_change_predictions(example):
                 scored[column],
             )
 
-        assert "score:euclidean_distance" in scored.column_names
+        assert "score:feature_distance" in scored.column_names
         assert "score:tanimoto_distance" in scored.column_names
         assert (
             "score:inverse_leaf_occupancy"
@@ -237,7 +237,7 @@ def test_reused_scorer_has_independent_state(example):
 def test_reference_scorers_prepare_directly(example):
     box, X = example
 
-    euclidean = EuclideanDistance().prepare(
+    euclidean = FeatureDistance().prepare(
         box, batch_size=7
     )
 

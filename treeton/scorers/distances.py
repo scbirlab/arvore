@@ -55,7 +55,7 @@ class FeatureReference:
             raise ValueError("Expected float64 feature reference")
         return cls.build(features, metric=spec["metric"])
 
-    def distance(self, X, *, n_neighbors=1) -> NDArray:
+    def distance(self, X, *, n_neighbors=1, return_var=False):
         """Mean distance to k nearest reference rows."""
         if not isinstance(n_neighbors, int) or not (
             1 <= n_neighbors <= self.n_reference
@@ -70,12 +70,17 @@ class FeatureReference:
         if not np.all(np.isfinite(X)):
             raise ValueError("Candidate features must be finite")
         if len(X) == 0:
-            return np.empty(0, dtype=np.float64)
+            empty = np.empty(0, dtype=np.float64)
+            return (empty, empty.copy()) if return_var else empty
 
         distances, _ = self.index.kneighbors(
             X, n_neighbors=n_neighbors
         )
-        return distances.mean(axis=1)
+        mean = distances.mean(axis=1)
+
+        if return_var:
+            return mean, distances.var(axis=1, ddof=0)
+        return mean
 
 
 @register_scorer
@@ -88,6 +93,7 @@ class FeatureDistance:
 
     metric: str = "euclidean"
     n_neighbors: int = 1
+    return_var: bool = False
 
     def __post_init__(self):
         if not isinstance(self.metric, str) or not self.metric:
@@ -125,7 +131,12 @@ class FeatureDistance:
     def __call__(self, context: ScoreContext) -> NDArray:
         if context.state is None:
             raise ValueError("Feature reference has not been prepared")
-        return context.state.distance(
+        result = context.state.distance(
             context.X,
             n_neighbors=self.n_neighbors,
+            return_var=self.return_var,
         )
+        if self.return_var:
+            mean, variance = result
+            return {"": mean, "var": variance}
+        return result

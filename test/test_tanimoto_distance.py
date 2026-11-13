@@ -147,7 +147,7 @@ def test_tanimoto_box(example):
     result = box.predict(
         score=[
             "tanimoto_distance",
-            "euclidean_distance",
+            "feature_distance",
         ],
         batch_size=5,
         map_kwargs={"load_from_cache_file": False},
@@ -162,7 +162,7 @@ def test_tanimoto_box(example):
         expected,
     )
 
-    assert "score:euclidean_distance" in result.column_names
+    assert "score:feature_distance" in result.column_names
 
     np.testing.assert_allclose(
         result["prediction:y"],

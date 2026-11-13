@@ -349,3 +349,222 @@ def test_invalid_k_rejected():
     feature = FeatureReference.build([[0], [1]])
     with pytest.raises(ValueError, match="neighbours"):
         feature.distance([[0]], n_neighbors=3)
+
+
+@pytest.mark.parametrize("metric", [
+    "euclidean", "manhattan", "chebyshev", "cosine"
+])
+@pytest.mark.parametrize("k", [1, 2, 4, 8])
+def test_feature_variance_matches_brute_force(metric, k):
+    rng = np.random.default_rng(450)
+    X = rng.normal(size=(32, 5))
+    Q = rng.normal(size=(9, 5))
+
+    ref = FeatureReference.build(X, metric=metric)
+    actual_mean, actual_var = ref.distance(
+        Q, n_neighbors=k, return_var=True
+    )
+
+    expected = np.sort(
+        pairwise_distances(Q, X, metric=metric),
+        axis=1,
+    )[:, :k]
+
+    np.testing.assert_allclose(
+        actual_mean, expected.mean(axis=1),
+        rtol=1e-10, atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        actual_var, expected.var(axis=1, ddof=0),
+        rtol=1e-10, atol=1e-10,
+    )
+
+    np.testing.assert_allclose(
+        actual_mean, ref.distance(Q, n_neighbors=k)
+    )
+
+    if k == 1:
+        np.testing.assert_array_equal(
+            actual_var, np.zeros(len(Q))
+        )
+
+
+@pytest.mark.parametrize("k", [1, 2, 4, 8])
+@pytest.mark.parametrize("return_indices", [False, True])
+def test_tanimoto_variance_matches_brute_force(k, return_indices):
+    rng = np.random.default_rng(451)
+    X = rng.integers(0, 2, (27, 130), dtype=np.uint8)
+    Q = rng.integers(0, 2, (11, 130), dtype=np.uint8)
+
+    X[0] = 0
+    Q[0] = 0
+    X[1] = X[2]
+    Q[1] = X[1]
+
+    ref = TanimotoReference.build(X)
+
+    result = ref.distance(
+        Q,
+        n_neighbors=k,
+        return_var=True,
+        return_indices=return_indices,
+        query_chunk=3,
+        reference_chunk=5,
+    )
+
+    if return_indices:
+        mean, variance, indices = result
+        assert indices.shape == (len(Q), k)
+    else:
+        mean, variance = result
+
+    expected_mean = []
+    expected_var = []
+    expected_idx = []
+
+    for q in Q:
+        intersection = np.logical_and(X, q).sum(axis=1)
+        union = np.logical_or(X, q).sum(axis=1)
+        similarities = np.divide(
+            intersection,
+            union,
+            out=np.ones(len(X), dtype=float),
+            where=union != 0,
+        )
+        order = np.lexsort(
+            (np.arange(len(X)), -similarities)
+        )[:k]
+        selected = 1.0 - similarities[order]
+        expected_mean.append(selected.mean())
+        expected_var.append(selected.var(ddof=0))
+        expected_idx.append(order)
+
+    np.testing.assert_allclose(
+        mean, expected_mean, rtol=0, atol=1e-12
+    )
+    np.testing.assert_allclose(
+        variance, expected_var, rtol=0, atol=1e-12
+    )
+    if return_indices:
+        np.testing.assert_array_equal(
+            indices, expected_idx
+        )
+
+    np.testing.assert_allclose(
+        mean, ref.distance(Q, n_neighbors=k),
+        rtol=0, atol=1e-12,
+    )
+
+    if k == 1:
+        np.testing.assert_array_equal(
+            variance, np.zeros(len(Q))
+        )
+
+
+def test_variance_scorer_outputs_and_reference_reuse(fitted_box):
+    box, data = fitted_box
+
+    result = predict(box, data, {
+        "feature_mean": FeatureDistance(
+            n_neighbors=4,
+        ),
+        "feature_stats": FeatureDistance(
+            n_neighbors=4,
+            return_var=True,
+        ),
+        "tanimoto_mean": TanimotoDistance(
+            n_neighbors=4,
+        ),
+        "tanimoto_stats": TanimotoDistance(
+            n_neighbors=4,
+            return_var=True,
+            return_neighbors=True,
+        ),
+    })
+
+    for name in ("feature_stats", "tanimoto_stats"):
+        assert f"score:{name}" in result.column_names
+        assert f"score:{name}:var" in result.column_names
+        assert all(
+            value >= -1e-15
+            for value in result[f"score:{name}:var"]
+        )
+
+    np.testing.assert_allclose(
+        result["score:feature_stats"],
+        result["score:feature_mean"],
+    )
+    np.testing.assert_allclose(
+        result["score:tanimoto_stats"],
+        result["score:tanimoto_mean"],
+    )
+
+    assert "score:tanimoto_stats:neighbor" in result.column_names
+
+    # One feature reference, one fingerprint reference,
+    # and one label resource; variance adds no reference.
+    assert len(box.references.snapshot()) == 3
+
+
+def test_variance_checkpoint_roundtrip(fitted_box, tmp_path):
+    box, data = fitted_box
+    scorers = {
+        "feature": FeatureDistance(
+            metric="manhattan",
+            n_neighbors=3,
+            return_var=True,
+        ),
+        "tanimoto": TanimotoDistance(
+            n_neighbors=3,
+            return_var=True,
+            return_neighbors=True,
+        ),
+    }
+
+    before = predict(box, data, scorers)
+
+    path = tmp_path / "variance.tt"
+    box.save(path)
+    restored = load(path)
+    after = predict(restored, data, scorers)
+
+    for column in (
+        "score:feature",
+        "score:feature:var",
+        "score:tanimoto",
+        "score:tanimoto:var",
+    ):
+        np.testing.assert_allclose(
+            before[column], after[column],
+            rtol=0, atol=1e-12,
+        )
+
+    assert (
+        before["score:tanimoto:neighbor"]
+        == after["score:tanimoto:neighbor"]
+    )
+    assert len(restored.references.snapshot()) == 3
+
+
+def test_return_var_single_neighbor_zero(fitted_box):
+    box, data = fitted_box
+
+    result = predict(box, data, {
+        "feature": FeatureDistance(
+            n_neighbors=1,
+            return_var=True,
+        ),
+        "tanimoto": TanimotoDistance(
+            n_neighbors=1,
+            return_var=True,
+        ),
+    })
+
+    np.testing.assert_array_equal(
+        result["score:feature:var"],
+        np.zeros(len(data)),
+    )
+    np.testing.assert_array_equal(
+        result["score:tanimoto:var"],
+        np.zeros(len(data)),
+    )

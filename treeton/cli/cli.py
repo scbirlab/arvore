@@ -83,9 +83,10 @@ def main() -> None:
         default=None,
         type=str,
         help=(
-            "Registered prediction scorer. "
-            "Configured scorers can also "
-            "be supplied in the prediction JSON config."
+            "Registered scorer or name(key=value) expression; "
+            "optionally prefix output_name=. "
+            "Quote expressions in the shell. "
+            "May be combined with JSON-configured scorers."
         ),
     )
 

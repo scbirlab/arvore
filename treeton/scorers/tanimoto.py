@@ -116,6 +116,7 @@ class TanimotoReference:
         *,
         n_neighbors=1,
         return_indices=False,
+        return_var=False,
         query_chunk=32,
         reference_chunk=512,
     ):
@@ -135,6 +136,10 @@ class TanimotoReference:
             fingerprints, n_bits=self.n_bits
         )
         distances = np.empty(len(queries), dtype=np.float64)
+        variances = (
+            np.empty(len(queries), dtype=np.float64)
+            if return_var else None
+        )
         neighbors = (
             np.empty((len(queries), n_neighbors), dtype=np.int64)
             if return_indices else None
@@ -194,13 +199,25 @@ class TanimotoReference:
                     candidate_idx, order, axis=1
                 )
 
+            neighbor_distances = 1.0 - best_sim
             distances[start:start + width] = (
-                1.0 - best_sim.mean(axis=1)
+                neighbor_distances.mean(axis=1)
             )
+
+            if variances is not None:
+                variances[start:start + width] = (
+                    neighbor_distances.var(axis=1, ddof=0)
+                )
+
             if neighbors is not None:
                 neighbors[start:start + width] = best_idx
 
         distances = np.clip(distances, 0.0, 1.0)
+
+        if return_var and return_indices:
+            return distances, variances, neighbors
+        if return_var:
+            return distances, variances
         if return_indices:
             return distances, neighbors
         return distances
@@ -240,6 +257,7 @@ class TanimotoDistance:
     query_chunk: int = 32
     reference_chunk: int = 512
     return_neighbors: bool = False
+    return_var: bool = False
     neighbor_column: str = "smiles"
     neighbor_delimiter: str = ";"
 
@@ -446,25 +464,41 @@ class TanimotoDistance:
 
         if self.return_neighbors:
             reference, labels = context.state
-            distances, indices = reference.distance(
-                context.batch[self.column],
-                n_neighbors=self.n_neighbors,
-                return_indices=True,
-                query_chunk=self.query_chunk,
-                reference_chunk=self.reference_chunk,
-            )
-            representations = labels.values[indices]
-            return {
-                "": distances,
-                "neighbor": [
-                    self.neighbor_delimiter.join(row)
-                    for row in representations
-                ],
-            }
+        else:
+            reference = context.state
+            labels = None
 
-        return context.state.distance(
+        result = reference.distance(
             context.batch[self.column],
             n_neighbors=self.n_neighbors,
+            return_indices=self.return_neighbors,
+            return_var=self.return_var,
             query_chunk=self.query_chunk,
             reference_chunk=self.reference_chunk,
         )
+
+        if not self.return_var and not self.return_neighbors:
+            return result
+
+        if self.return_var and self.return_neighbors:
+            mean, variance, indices = result
+        elif self.return_var:
+            mean, variance = result
+            indices = None
+        else:
+            mean, indices = result
+            variance = None
+
+        output = {"": mean}
+
+        if variance is not None:
+            output["var"] = variance
+
+        if indices is not None:
+            representations = labels.values[indices]
+            output["neighbor"] = [
+                self.neighbor_delimiter.join(row)
+                for row in representations
+            ]
+
+        return output
