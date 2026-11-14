@@ -66,45 +66,94 @@ def _parse_override_value(
         return value
 
 
+def _load_override_file(path: Path) -> Mapping[str, Any]:
+    """Load a flat mapping of dotted overrides from JSON or YAML."""
+    import yaml
+
+    with path.open(encoding="utf-8") as handle:
+        if path.suffix.lower() == ".json":
+            data = json.load(handle)
+        else:
+            data = yaml.safe_load(handle)
+
+    if not isinstance(data, Mapping):
+        raise ValueError(
+            f"Override file {str(path)!r} must contain a mapping."
+        )
+
+    return data
+
+
+def _load_override_file(path: Path) -> Mapping[str, Any]:
+    """Load a flat mapping of dotted overrides from JSON or YAML."""
+    import yaml
+
+    with path.open(encoding="utf-8") as handle:
+        if path.suffix.lower() == ".json":
+            data = json.load(handle)
+        else:
+            data = yaml.safe_load(handle)
+
+    if not isinstance(data, Mapping):
+        raise ValueError(
+            f"Override file {str(path)!r} must contain a mapping."
+        )
+
+    return data
+
+
 def apply_overrides(
     config: Mapping[str, ...],
-    overrides: Iterable[str, ...] | None = None,
+    overrides: Iterable[str] | None = None,
 ) -> dict[str, ...]:
-    """Apply dotted-path CLI overrides to configuration."""
+    """Apply ordered dotted overrides or JSON/YAML override files."""
     result = deepcopy(dict(config))
+
     for override in overrides or ():
-        try:
-            path, raw_value = override.split(
-                "=",
-                1,
-            )
-        except ValueError as error:
-            raise ValueError(
-                "Config overrides must have form "
-                "'path.to.option=value', "
-                f"but got {override!r}."
-            ) from error
+        path = Path(override)
 
-        keys = path.split(".")
-
-        if any(not key for key in keys):
-            raise ValueError(
-                f"Invalid config override path {path!r}."
-            )
-
-        cursor = result
-        for key in keys[:-1]:
-            if key not in cursor:
-                cursor[key] = {}
-            elif not isinstance(cursor[key], Mapping):
+        if path.suffix.lower() in {".json", ".yaml", ".yml"}:
+            entries = _load_override_file(path).items()
+        else:
+            try:
+                key, raw_value = override.split("=", 1)
+            except ValueError as error:
                 raise ValueError(
-                    f"Cannot override {path!r}: "
-                    f"{key!r} is not a mapping."
+                    "Config overrides must have form "
+                    "'path.to.option=value' or specify a "
+                    f"JSON/YAML file, but got {override!r}."
+                ) from error
+
+            entries = [(key, _parse_override_value(raw_value))]
+
+        for key, value in entries:
+            if not isinstance(key, str):
+                raise ValueError(
+                    f"Config override keys must be strings: {key!r}."
                 )
-            cursor = cursor[key]
-        cursor[keys[-1]] = _parse_override_value(raw_value)
+
+            keys = key.split(".")
+
+            if any(not part for part in keys):
+                raise ValueError(
+                    f"Invalid config override path {key!r}."
+                )
+
+            cursor = result
+            for part in keys[:-1]:
+                if part not in cursor:
+                    cursor[part] = {}
+                elif not isinstance(cursor[part], Mapping):
+                    raise ValueError(
+                        f"Cannot override {key!r}: "
+                        f"{part!r} is not a mapping."
+                    )
+                cursor = cursor[part]
+
+            cursor[keys[-1]] = deepcopy(value)
 
     return result
+
 
 
 def model_aliases() -> tuple[str, ...]:

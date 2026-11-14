@@ -65,7 +65,7 @@ def main() -> None:
         type=str,
         help=(
             "Override configuration with "
-            "dotted.path=value. May be repeated."
+            "dotted.path=value or a JSON/YAML file. ""May be repeated; later values take precedence."
         ),
     )
     pipeline_opt = CLIOption(
