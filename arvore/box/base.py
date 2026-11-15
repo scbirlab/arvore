@@ -21,7 +21,12 @@ from ..prediction import DEFAULT_PREDICTION_COLUMN, predict_map_batch
 from ..tabular import is_dataset, matrix, resolve_pipeline, unwrap
 from ..typing import Estimator, DataLike, PipelineLike
 from .evaluation import exact_observed, resolve_metrics, targets_and_censor
-from .identity import box_fingerprint, operation_fingerprint, pipeline_identity
+from .identity import (
+    box_fingerprint,
+    operation_fingerprint,
+    pipeline_identity,
+    training_identity,
+)
 
 DEFAULT_BATCH_SIZE: int = 1024
 
@@ -99,6 +104,7 @@ class Box:
         self._references = None
         self._validation_score = None
         self._fingerprint = None
+        self._training_identity = training_identity(self.pipeline)
 
     @property
     def references(self):
@@ -119,9 +125,9 @@ class Box:
     def fingerprint(self) -> str:
         """Deterministic identity of the fitted Box.
 
-        Built from content digests of the fitted model, the preprocessing
-        config, features, targets and the retained training data. Stable
-        across save and load. Computed once per fit or load.
+        Built from the content digest of the fitted model, the preprocessing
+        config, features, targets and the provenance of the training data.
+        Stable across save and load. Computed once per fit or load.
         """
         if self._fingerprint is None:
             self._fingerprint = box_fingerprint(self)
@@ -318,6 +324,7 @@ class Box:
             data, 
             training=True,
         )
+        self._training_identity = training_identity(pipeline)
         X, *targets = self._matrix(training_data, pipeline)
         y, censor = targets_and_censor(targets)
         if early_stopping_rounds is not None and not use_validation_for_fit:

@@ -402,6 +402,8 @@ Arvore also supports batched predictions, making it suitable for evaluating larg
 
 Predictions and evaluations run through Hugging Face `Dataset.map` and are fingerprinted by the input data, the requested scorers and a content fingerprint of the fitted `Box` (`box.fingerprint`). For file-backed datasets, repeating a prediction with the same model, data and scorers loads the cached result, including after the checkpoint is reloaded.
 
+`box.fingerprint` identifies the training data by its Providence provenance, never by reading the data: a remote source pinned to a commit, or the checksum of a local source (including in-memory data Providence checksums when loading it), plus any selected rows. Other in-memory datasets are identified by their Datasets fingerprint, and data with no identity at all gets a unique one, so it never shares an identity with other data. The identity is saved with the checkpoint and trusted on loading, because Providence verifies the restored training data against its recorded checksum and refuses to load data that no longer matches. The checkpoint manifest is not signed, so this trust extends only as far as trust in the checkpoint.
+
 ## Evaluation and reproducibility
 
 Evaluate models against held-out data using standard regression metrics:

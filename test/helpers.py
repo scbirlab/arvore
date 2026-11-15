@@ -20,6 +20,7 @@ def bare_box(model, features, target=("y",), *, reference=None, candidates=None)
     box._references = None
     box._validation_score = None
     box._fingerprint = None
+    box._training_identity = None
     box.pipeline = SimpleNamespace(
         data_in=None,
         data_out=reference,

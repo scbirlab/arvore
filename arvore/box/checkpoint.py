@@ -67,6 +67,7 @@ def save(
             "schema_version": SCHEMA_VERSION,
             "config": config,
             "model": model_metadata,
+            "training_identity": box._training_identity,
             "artefacts": {"training_data": "training-data.as"},
         }
         box.pipeline.save(
@@ -164,6 +165,15 @@ def load(
         censor=config.get("censor"),
         loss=config.get("loss"),
     )
+    # Loading the pipeline has verified the training data: embedded data
+    # against the checksum saved with it, local data saved by reference
+    # against its source checksum, and remote data by its pinned commit.
+    # The identity taken at fit time therefore still holds, whereas in-memory
+    # data would otherwise be re-identified by the embedded copy's new
+    # fingerprint. The manifest itself is not signed: like the rest of a
+    # checkpoint, the identity is only as trustworthy as its source.
+    if "training_identity" in manifest:
+        box._training_identity = manifest["training_identity"]
 
     from ..scorers.persistence import load_references
     load_references(

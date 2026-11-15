@@ -1,7 +1,8 @@
 """Content identities of fitted Boxes, their data and the operations on them."""
 
-from ..tabular import is_dataset
-
+import json
+import re
+from uuid import uuid4
 
 def pipeline_identity(pipeline):
     """Fitted preprocessing identity from its config, never its data."""
@@ -14,16 +15,43 @@ def pipeline_identity(pipeline):
     return Hasher.hash(pipeline)
 
 
-def data_identity(data):
-    """Content checksum of retained data, independent of storage layout."""
-    from pandas import DataFrame
-    from providence.io import dataframe_checksum
+def _pinned(source) -> bool:
+    """Whether a remote source is pinned to an immutable commit.
 
-    if data is None:
+    Providence resolves Hugging Face revisions to commit SHAs. A branch or
+    tag name, or no revision at all, can move while the URI stays the same.
+    """
+    return (
+        source.is_remote
+        and re.fullmatch(r"[0-9a-f]{40}", source.revision) is not None
+    )
+
+
+def training_identity(pipeline):
+    """Identity of the data a pipeline was fitted on, from provenance, not contents.
+
+    In order of preference: a remote source pinned to a commit, the checksum
+    Providence records for local and in-memory sources, Datasets'
+    fingerprint, or, when none exists, a unique token, so unidentifiable
+    data never shares an identity. Selected rows are included; preprocessing
+    is identified separately by its config.
+    """
+    resolver = getattr(pipeline, "data_in", None)
+    if resolver is None:
         return None
-    if is_dataset(data):
-        return dataframe_checksum(data.with_format(None).to_pandas())
-    return dataframe_checksum(DataFrame(dict(data)))
+
+    source = resolver.data_source
+    fingerprint = getattr(resolver.data, "_fingerprint", None)
+    if source is not None and _pinned(source):
+        provenance = {"uri": source.uri, "revision": source.revision}
+    elif source is not None and source.checksum is not None:
+        provenance = {"checksum": source.checksum}
+    elif fingerprint is not None:
+        provenance = {"fingerprint": fingerprint}
+    else:
+        provenance = {"unidentified": uuid4().hex}
+    # JSON-native, so it is unchanged by a checkpoint round trip.
+    return json.loads(json.dumps({**provenance, "selected_rows": resolver.selected_rows}))
 
 
 def model_identity(model) -> str:
@@ -46,11 +74,6 @@ def box_fingerprint(box) -> str:
     from aspect import __version__ as aspect_version
     from .. import __version__
 
-    try:
-        training = data_identity(box.training_data)
-    except (AttributeError, ValueError):
-        training = None
-
     return Hasher.hash({
         "arvore": __version__,
         "aspect": aspect_version,
@@ -58,7 +81,7 @@ def box_fingerprint(box) -> str:
         "pipeline": pipeline_identity(box.pipeline),
         "features": list(box.features),
         "target": list(box.target),
-        "training": training,
+        "training": box._training_identity,
     })
 
 
