@@ -6,6 +6,7 @@ from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 
 from arvore import Box, Loss
+from arvore.box.base import _exact_observed
 from arvore.models import get_adapter
 from arvore.models.adapters import load_model, save_model
 from arvore.models.losses import LOSSES, resolve_loss, squared_error
@@ -377,9 +378,8 @@ def box_config(**box):
     }
 
 
-@pytest.fixture
-def censored_dataset():
-    X, truth, y, censor = make_censored(0, n=300)
+def make_censored_dataset(seed, n=300):
+    X, truth, y, censor = make_censored(seed, n=n)
     y[::17] = np.nan
     return Dataset.from_dict({
         "x0": X[:, 0].tolist(),
@@ -387,6 +387,11 @@ def censored_dataset():
         "y": y.tolist(),
         "qualifier": censor.tolist(),
     }), truth
+
+
+@pytest.fixture
+def censored_dataset():
+    return make_censored_dataset(0)
 
 
 def test_box_censored_masked_checkpoint(tmp_path, censored_dataset):
@@ -427,3 +432,82 @@ def test_box_without_loss_keeps_missing_targets_an_error(censored_dataset):
     assert box.to_config()["loss"] is None
     with pytest.raises(Exception, match="(?i)label|nan"):
         box.fit(data, skip_eval=True)
+
+
+def test_exact_observed():
+    y_true = np.array([[1., 5.], [5., np.nan], [5., 2.]])
+    y_pred = np.array([[2., 7.], [3., 0.], [7., 1.]])
+    censor = np.array([[0, 1], [0, 0], [-1, 0]])
+
+    np.testing.assert_array_equal(
+        np.concatenate(_exact_observed(y_true, y_pred, censor, masked=True)),
+        [1., 5., 2., 2., 3., 1.],
+    )
+    unfiltered = y_true[:, :1], y_pred[:, :1]
+    for returned, given in zip(_exact_observed(*unfiltered), unfiltered):
+        np.testing.assert_array_equal(returned, given)
+
+    with pytest.raises(ValueError, match="No exact, observed targets"):
+        _exact_observed(y_true[:1, 1:], y_pred[:1, 1:], censor[:1, 1:])
+
+
+def exact_rmsd(predicted):
+    y = np.asarray(predicted["y"], dtype=float)
+    prediction = np.asarray(predicted["prediction:y"])
+    exact = np.isfinite(y) & (np.asarray(predicted["qualifier"]) == 0)
+    return np.sqrt(np.mean(np.square(prediction - y)[exact]))
+
+
+@pytest.mark.parametrize("masked", [False, True])
+def test_box_evaluate_scores_exact_targets(censored_dataset, masked):
+    data, _ = censored_dataset
+    config = box_config(censor="qualifier")
+    if masked:
+        config["loss"] = {"masked": True}
+    else:
+        data = data.filter(lambda row: np.isfinite(row["y"]))
+    box = Box.from_config(config)
+    box.fit(data, skip_eval=True)
+
+    predicted, scores = box.evaluate(data, metrics=["rmsd", "pearson"])
+
+    assert np.isfinite(list(scores.values())).all()
+    assert scores["rmsd"] == pytest.approx(exact_rmsd(predicted))
+
+
+def test_box_fit_validation_checkpoint_roundtrip(tmp_path):
+    training, _ = make_censored_dataset(0)
+    validation, _ = make_censored_dataset(1, n=150)
+    config = box_config(censor="qualifier", loss={"masked": True})
+    rounds = config["model"]["base"]["init_args"]["n_estimators"]
+    box = Box.from_config(config)
+
+    box.fit(
+        training,
+        validation=validation,
+        use_validation_for_fit=True,
+        early_stopping_rounds=10,
+        skip_eval=False,
+        metrics=["rmsd", "pearson"],
+    )
+    predicted, scores = box.evaluate(validation, metrics=["rmsd", "pearson"])
+
+    assert all(
+        0 <= member.best_iteration < rounds
+        for member in box.model.members.values()
+    )
+    assert box._validation_score == pytest.approx(scores)
+    assert np.isfinite(list(scores.values())).all()
+    assert scores["rmsd"] == pytest.approx(exact_rmsd(predicted))
+
+    box.save(tmp_path / "box")
+    restored = Box.load(tmp_path / "box")
+    restored_predicted, restored_scores = restored.evaluate(
+        validation, metrics=["rmsd", "pearson"],
+    )
+
+    assert restored_scores == pytest.approx(scores)
+    np.testing.assert_allclose(
+        np.asarray(restored_predicted["prediction:y"]),
+        np.asarray(predicted["prediction:y"]),
+    )

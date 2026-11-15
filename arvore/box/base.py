@@ -167,6 +167,25 @@ def _targets(arrays):
     return y, (censor[0] if censor else None)
 
 
+def _exact_observed(y_true, y_pred, censor=None, masked=False):
+    """Select exact targets, and observed ones when masked, for scoring.
+
+    Several targets are flattened to their selected values.
+    """
+    import numpy as np
+
+    selected = np.ones(np.shape(y_true), dtype=bool)
+    if masked:
+        selected &= np.isfinite(y_true)
+    if censor is not None:
+        selected &= ~((censor < 0) | (censor > 0))
+    if selected.all():
+        return y_true, y_pred
+    if not selected.any():
+        raise ValueError("No exact, observed targets to evaluate")
+    return y_true[selected], y_pred[selected]
+
+
 def get_transformed_column(
     column: str, 
     dataset: Dataset | IterableDataset | Mapping, 
@@ -733,18 +752,22 @@ class Box:
         from providence import DataResolver
         return data.data if isinstance(data, DataResolver) else data
 
+    @property
+    def _target_columns(self) -> tuple[tuple[str, ...], ...]:
+        """Target columns, then any censoring indicator columns."""
+        if self.censor is not None:
+            return (self.target, self.censor)
+        return (self.target,)
+
     def _matrix(
         self, 
         dataset: Dataset, 
         pipeline: DataPipeline
     ):
-        column_groups = (self.features, self.target)
-        if self.censor is not None:
-            column_groups += (self.censor,)
         return _matrix(
             dataset=dataset,
             pipeline=pipeline,
-            column_groups=column_groups,
+            column_groups=(self.features, *self._target_columns),
         )
 
     def fit(
@@ -960,7 +983,16 @@ class Box:
         batch_size: int = DEFAULT_BATCH_SIZE,
         **map_kwargs,
     ):
-        """Return predicted dataset and evaluation scores."""
+        """Return predicted dataset and evaluation scores.
+
+        Metrics score exact targets only, excluding censored targets and,
+        under a masked ``loss``, missing ones. Training, including early
+        stopping, still uses censored targets through the loss. When any
+        target is excluded, several targets are pooled into one array, so
+        each target is weighted by its number of exact values, and
+        per-target averaging is lost. Raises ``ValueError`` when no exact
+        target remains, as for an entirely censored validation set.
+        """
         if batch_size < 1:
             raise ValueError(f"batch_size must be positive: {batch_size}")
 
@@ -1006,10 +1038,10 @@ class Box:
             working_pipeline,
             (prediction_cols,),
         )
-        (y_true,) = _matrix(
+        y_true, *censor = _matrix(
             predicted,
             working_pipeline,
-            (self.target,),
+            self._target_columns,
         )
 
         if y_pred.shape != y_true.shape:
@@ -1020,7 +1052,14 @@ class Box:
 
         if y_true.shape[1] == 1:
             y_pred = y_pred[:, 0]
-            y_true = y_true[:, 0]
+        y_true, censor = _targets((y_true, *censor))
+
+        y_true, y_pred = _exact_observed(
+            y_true,
+            y_pred,
+            censor,
+            masked=self.loss is not None and self.loss.masked,
+        )
 
         scores = {
             name: fn(y_true, y_pred)

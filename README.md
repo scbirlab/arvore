@@ -243,6 +243,8 @@ box = Box(
 )
 ```
 
+`Box.evaluate`, including the validation scores from `Box.fit`, computes its metrics on exact targets only: censored targets, and under a masked `loss` missing targets, are excluded. Training and early stopping still use censored targets through the loss. When targets are excluded, several targets are pooled into one array, weighting each by its number of exact values; evaluating an entirely censored dataset raises `ValueError`.
+
 ## Prediction scoring
 
 Arvore supports composable prediction diagnostics through the `score` argument of `Box.predict()`.
