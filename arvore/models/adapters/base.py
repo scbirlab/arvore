@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 
 from carabiner.decorators import decorator_with_params
+import numpy as np
 
 from ...typing import FitAdapter, Validation
 
@@ -73,8 +74,6 @@ def _drop_masked(loss, X, y, censor=None, fit_kwargs=None):
     if loss is None or not loss.masked:
         return X, y, censor
 
-    import numpy as np
-
     observed = np.isfinite(y).reshape(len(y), -1).any(axis=1)
     if not observed.any():
         raise ValueError("No observed targets remain after masking")
@@ -106,8 +105,6 @@ def _temporary_params(estimator, **params):
 
 def _normalize_leaf_indices(values, n_samples):
     """Normalise backend leaves to (samples, trees) int64."""
-    import numpy as np
-
     leaves = np.asarray(values)
 
     if leaves.ndim == 0:

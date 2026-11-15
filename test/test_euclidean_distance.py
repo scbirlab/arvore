@@ -1,15 +1,15 @@
 """Euclidean reference-distance scoring tests."""
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 
-from arvore import Box, Ensemble
+from arvore import Ensemble
 from arvore.scorers import FeatureDistance
 from arvore.scorers.distances import FeatureReference
+
+from helpers import bare_box
 
 
 @pytest.fixture
@@ -34,19 +34,12 @@ def example():
     train = dataset(X_train)
     test = dataset(X_test)
 
-    box = Box.__new__(Box)
-    box.model = model
-    box.features = tuple(f"x{i}" for i in range(4))
-    box.target = ("y",)
-
-    pipeline = SimpleNamespace(
-        data_in=None,
-        data_out=train,
-        column_transforms={},
+    box = bare_box(
+        model,
+        tuple(f"x{i}" for i in range(4)),
+        reference=train,
+        candidates=test,
     )
-
-    box.pipeline = pipeline
-    box._pre_predict = lambda **kwargs: (test, pipeline)
 
     return box, X_train, X_test, model
 

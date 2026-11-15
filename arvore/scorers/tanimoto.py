@@ -6,8 +6,9 @@ from typing import ClassVar
 import numpy as np
 from numpy.typing import NDArray
 
+from ..tabular import unwrap
 from .base import Requirements, ScoreContext
-from .registry import register_scorer
+from .registry import register_reference, register_scorer
 
 
 def _encode_fingerprints(fingerprints, n_bits=None):
@@ -52,6 +53,7 @@ def _encode_fingerprints(fingerprints, n_bits=None):
     return packed, counts, bits.shape[1]
 
 
+@register_reference("tanimoto")
 @dataclass(frozen=True)
 class TanimotoReference:
     """Packed fingerprints for exact Tanimoto nearest-neighbour search."""
@@ -223,6 +225,7 @@ class TanimotoReference:
         return distances
 
 
+@register_reference("tanimoto_labels")
 @dataclass(frozen=True)
 class ReferenceLabels:
     """Row-aligned string representations of reference observations."""
@@ -314,12 +317,7 @@ class TanimotoDistance:
             [self.structure_column]
         )
 
-        transformed = self._fingerprint_pipeline()(source)
-
-        # Aspect returns a Providence DataResolver.
-        if hasattr(transformed, "data"):
-            transformed = transformed.data
-
+        transformed = unwrap(self._fingerprint_pipeline()(source))
         fingerprints = transformed.with_format(None)[
             self.column
         ]
@@ -387,7 +385,7 @@ class TanimotoDistance:
 
     def _reference_data(self, box):
         """Find raw or retained rows in reference order."""
-        data = box._training_reference()
+        data = box.training_data
         required = {self.column}
         if self.return_neighbors:
             required.add(self.neighbor_column)
@@ -395,7 +393,7 @@ class TanimotoDistance:
         if not required.issubset(set(data.column_names)):
             source = getattr(box.pipeline, "data_in", None)
             if source is not None:
-                source = box._unwrap(source)
+                source = unwrap(source)
                 if hasattr(source, "with_format"):
                     source = source.with_format(None)
                 if hasattr(source, "column_names"):

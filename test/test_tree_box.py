@@ -206,7 +206,6 @@ def test_box_model_config_delegation():
     assert box.to_config()["model"] == config
 
     # No duplicated configuration in Box.
-    assert box._model_config_fallback is None
 
     # Defensive copying.
     returned = box.model_config
@@ -251,4 +250,105 @@ def test_restored_model_config(tmp_path):
 
     assert restored.model.to_config() == config["model"]
     assert restored.model_config == config["model"]
-    assert restored._model_config_fallback is None
+
+
+def test_single_estimator_is_one_member_ensemble(tmp_path):
+    from sklearn.ensemble import RandomForestRegressor
+    from arvore import Ensemble
+
+    estimator = RandomForestRegressor(n_estimators=5, random_state=0)
+    box = Box(model=estimator, features="x", target="y")
+
+    assert isinstance(box.model, Ensemble)
+    assert box.model.members == {"model": estimator}
+    assert box.model_config is None
+
+
+def test_legacy_single_estimator_checkpoint(tmp_path):
+    from providence.io import load_json, save_json
+    from arvore import Ensemble
+    from arvore.models.adapters import save_model
+
+    training, testing = make_data(tmp_path)
+    box = Box.from_config(make_config())
+    box.fit(str(training), skip_eval=True)
+    checkpoint = tmp_path / "legacy.ao"
+    box.save(checkpoint)
+
+    # Checkpoints from before Box always held an Ensemble saved the bare estimator.
+    manifest = load_json(checkpoint / "config.json")
+    manifest["model"] = save_model(box.model.members["model"], checkpoint)
+    save_json(manifest, checkpoint / "config.json")
+
+    restored = Box.load(checkpoint, trusted_types=("sklearn.tree._tree.Tree",))
+
+    assert isinstance(restored.model, Ensemble)
+    np.testing.assert_allclose(
+        restored.predict(str(testing))["prediction:y"],
+        box.predict(str(testing))["prediction:y"],
+    )
+
+
+def test_schema_1_checkpoint_deprecated(tmp_path):
+    import pytest
+    from providence.io import save_json
+
+    checkpoint = tmp_path / "schema-1.ao"
+    checkpoint.mkdir()
+    save_json(
+        {"schema_version": 1, "artefacts": {"model_binary": "model.joblib"}},
+        checkpoint / "config.json",
+    )
+
+    with pytest.warns(DeprecationWarning, match="Schema-1"):
+        with pytest.raises(ValueError, match="joblib"):
+            Box.load(checkpoint)
+
+
+def test_bare_estimator_lifecycle(tmp_path):
+    from sklearn.ensemble import RandomForestRegressor
+    from arvore import Ensemble
+
+    training, testing = make_data(tmp_path)
+    estimator = RandomForestRegressor(n_estimators=10, random_state=0)
+    box = Box(model=estimator, features="x", target="y", pipeline={})
+
+    box.fit(str(training), skip_eval=True)
+    predictions = np.asarray(box.predict(str(testing))["prediction:y"])
+
+    assert hasattr(estimator, "estimators_")
+    np.testing.assert_allclose(
+        predictions,
+        estimator.predict(np.array([[1.5], [6.5], [15.5]])),
+    )
+    assert box.to_config()["model"] is None
+
+    box.save(tmp_path / "bare.ao")
+    restored = Box.load(tmp_path / "bare.ao", trusted_types=("sklearn.tree._tree.Tree",))
+
+    assert isinstance(restored.model, Ensemble)
+    assert isinstance(restored.model.members["model"], RandomForestRegressor)
+    np.testing.assert_allclose(
+        np.asarray(restored.predict(str(testing))["prediction:y"]),
+        predictions,
+    )
+    restored.fit(str(training), skip_eval=True)
+
+
+def test_saved_references_restore_in_fresh_process(tmp_path):
+    import sys
+
+    training, testing = make_data(tmp_path)
+    box = Box.from_config(make_config())
+    box.fit(str(training), skip_eval=True)
+    checkpoint = tmp_path / "scored.ao"
+    box.save(checkpoint, score=["feature_distance", "inverse_leaf_occupancy"])
+
+    # A fresh interpreter has imported nothing that registers reference types.
+    script = (
+        "from arvore import Box\n"
+        f"box = Box.load({str(checkpoint)!r}, trusted_types=('sklearn.tree._tree.Tree',))\n"
+        "assert len(box.references.snapshot()) == 2, box.references.snapshot()\n"
+    )
+    subprocess.run([sys.executable, "-c", script], check=True)
+

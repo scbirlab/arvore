@@ -1,42 +1,24 @@
 """Resolve adapters from estimators and saved codec names."""
 
 from ...typing import Estimator, FitAdapter
-from .base import ADAPTERS
-from .catboost import CatBoostAdapter
-from .ensemble import EnsembleAdapter
-from .lightgbm import LightGBMAdapter, LightGBMPredictor
-from .sklearn import SklearnAdapter
-from .xgboost import XGBoostAdapter
+from .base import ADAPTERS, _class_path
 
 
 def get_adapter(estimator: Estimator) -> FitAdapter:
-    """Select a backend using the estimator's type.
+    """Select the registered family handling ``estimator``, else scikit-learn.
+
+    Raises ``TypeError`` when more than one registered family handles it.
     """
-    from sys import modules
-    from ..ensemble import Ensemble
-
-    if isinstance(estimator, Ensemble):
-        return EnsembleAdapter()
-
-    if isinstance(estimator, LightGBMPredictor):
-        return LightGBMAdapter()
-
-    if "xgboost" in modules:
-        from xgboost import XGBModel
-        if isinstance(estimator, XGBModel):
-            return XGBoostAdapter()
-
-    if "lightgbm" in modules:
-        from lightgbm import LGBMModel
-        if isinstance(estimator, LGBMModel):
-            return LightGBMAdapter()
-
-    if "catboost" in modules:
-        from catboost import CatBoost
-        if isinstance(estimator, CatBoost):
-            return CatBoostAdapter()
-
-    return SklearnAdapter()
+    matches = [
+        adapter for adapter in ADAPTERS.values()
+        if adapter.handles(estimator)
+    ]
+    if len(matches) > 1:
+        raise TypeError(
+            f"Several adapters handle {_class_path(estimator)}: "
+            f"{[adapter.name for adapter in matches]}"
+        )
+    return matches[0] if matches else ADAPTERS["skops"]
 
 
 def get_adapter_by_name(name: str):

@@ -2,7 +2,11 @@
 
 from collections.abc import Mapping
 from hashlib import sha256
+from importlib import import_module
+import sys
+import warnings
 
+import numpy as np
 from numpy.typing import ArrayLike
 
 from ..losses import Loss
@@ -12,14 +16,13 @@ from .base import (
     _drop_masked,
     _normalize_leaf_indices,
     _require_native_loss,
+    _require_validation,
     register_adapter,
 )
 
 
 def _array_digest(array) -> str:
     """SHA-256 of array values, ignoring struct padding and layout."""
-    import numpy as np
-
     digest = sha256(repr((
         array.dtype.descr if array.dtype.names else array.dtype.str,
         array.shape,
@@ -38,8 +41,6 @@ def _skops_digest(raw: bytes) -> str:
     import io
     import json
     import zipfile
-
-    import numpy as np
 
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
 
@@ -73,10 +74,30 @@ def _skops_digest(raw: bytes) -> str:
 
 @register_adapter(name="skops")
 class SklearnAdapter:
+    """Fit, predict and persist scikit-learn-compatible estimators.
+
+    Model families subclass this, declaring the ``estimator_classes`` they
+    handle and implementing ``_fit``. Estimators no family handles fall back
+    to this adapter.
+    """
 
     name = None
     filename = None
+    estimator_classes: tuple[str, ...] = ()
     restored_trainable: bool = True
+    supports_early_stopping: bool = False
+    supports_custom_objective: bool = False
+
+    def handles(self, estimator) -> bool:
+        """Whether ``estimator`` is one of this family's classes."""
+        for class_path in self.estimator_classes:
+            module, _, name = class_path.rpartition(".")
+            # Never import an optional backend just to rule it out.
+            if module.partition(".")[0] not in sys.modules:
+                continue
+            if isinstance(estimator, getattr(import_module(module), name)):
+                return True
+        return False
 
     def save(self, model, path, **kwargs):
         import skops.io as sio
@@ -102,27 +123,22 @@ class SklearnAdapter:
         self,
         estimator: Estimator,
         *,
-        _class=None,
         allow_unsafe: bool = False
     ) -> str:
         """Choose a compatible serialization format."""
+        if self.handles(estimator):
+            return self.name
 
-        if _class is not None and isinstance(_class, type):
-            if isinstance(estimator, _class):
-                return self.name
-
-        # The normal sklearn serialization path.
         if type(estimator).__module__.startswith("sklearn."):
             return "skops"
 
         if allow_unsafe:
             return "joblib"
-        else:
-            raise TypeError(
-                f"No supported codec for "
-                f"{_class_path(estimator)}. "
-                "Use allow_unsafe=True to enable arbitrary binary serialization."
-            )
+        raise TypeError(
+            f"No supported codec for "
+            f"{_class_path(estimator)}. "
+            "Use allow_unsafe=True to enable arbitrary binary serialization."
+        )
 
     def fit(
         self,
@@ -136,27 +152,63 @@ class SklearnAdapter:
         loss: Loss | None = None,
         censor: ArrayLike | None = None,
     ):
-        """Fit on the estimator's own objective, dropping masked rows."""
-        if early_stopping_rounds is not None:
-            raise ValueError(
-                "Generic sklearn estimators do not support "
-                "early_stopping_rounds"
-            )
-        _require_native_loss(estimator, loss, censor)
-        kw = dict(fit_kwargs or {})
-        X, y, _ = _drop_masked(loss, X, y, fit_kwargs=kw)
-        if loss is not None and loss.requires_objective(y):
-            import warnings
+        """Fit ``estimator``, masking and censoring targets as ``loss`` requires.
 
+        Censored targets default to ``Loss()``. Families without custom
+        objectives reject censored targets and custom losses.
+        """
+        if early_stopping_rounds is not None and not self.supports_early_stopping:
+            raise ValueError(
+                f"{_class_path(estimator)} does not support early_stopping_rounds"
+            )
+        _require_validation(validation, early_stopping_rounds)
+        fit_kwargs = dict(fit_kwargs or {})
+        if {"eval_set", "eval_X", "eval_y"} & fit_kwargs.keys():
+            raise ValueError(
+                "Use validation= instead of fit.eval_set/eval_X/eval_y"
+            )
+        if censor is not None and loss is None:
+            loss = Loss()
+        if not self.supports_custom_objective:
+            _require_native_loss(estimator, loss, censor)
+
+        X, y, censor = _drop_masked(loss, X, y, censor, fit_kwargs)
+        if validation is not None:
+            validation = _drop_masked(loss, *validation)
+
+        self._fit(
+            estimator,
+            X,
+            y,
+            validation=validation,
+            fit_kwargs=fit_kwargs,
+            early_stopping_rounds=early_stopping_rounds,
+            loss=loss,
+            censor=censor,
+        )
+
+    def _fit(
+        self,
+        estimator,
+        X,
+        y,
+        *,
+        validation,
+        fit_kwargs,
+        early_stopping_rounds,
+        loss,
+        censor,
+    ):
+        if loss is not None and loss.requires_objective(y):
             warnings.warn(
                 f"{_class_path(estimator)} cannot mask individual targets: "
                 "only rows missing every target were dropped. Rows missing "
                 "some targets are passed on as missing values, which most "
                 "scikit-learn estimators reject.",
                 RuntimeWarning,
-                stacklevel=2,
+                stacklevel=3,
             )
-        estimator.fit(X, y, **kw)
+        estimator.fit(X, y, **fit_kwargs)
 
     def predict(
         self,
@@ -183,7 +235,6 @@ class SklearnAdapter:
 
     def tree_predictions(self, estimator, X):
         """Return (samples, trees, targets) predictions."""
-        import numpy as np
         from sklearn.utils.validation import check_is_fitted
 
         if "tree_predictions" not in self.capabilities(estimator):

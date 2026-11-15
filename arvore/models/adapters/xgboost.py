@@ -1,13 +1,8 @@
-"""Adapter for XGBoost estimators, persisted as UBJSON."""
+"""Adapter for XGBoost regressors, persisted as UBJSON."""
 
-from collections.abc import Mapping
+import numpy as np
 
-from numpy.typing import ArrayLike
-
-from ..losses import Loss
-from ...typing import Estimator, Validation
 from .base import (
-    _drop_masked,
     _normalize_leaf_indices,
     _require_validation,
     _temporary_params,
@@ -37,12 +32,15 @@ def _metric(loss, y, censor):
 
 def _finite_labels(y):
     """XGBoost rejects missing labels, even when a custom objective ignores them."""
-    import numpy as np
     return np.where(np.isfinite(y), y, 0.)
 
 
 @register_adapter(name="xgboost", ext="ubj")
 class XGBoostAdapter(SklearnAdapter):
+
+    estimator_classes = ("xgboost.XGBRegressor",)
+    supports_early_stopping = True
+    supports_custom_objective = True
 
     def capabilities(self, estimator):
         if estimator.get_params().get("booster") == "gblinear":
@@ -60,15 +58,6 @@ class XGBoostAdapter(SklearnAdapter):
             len(X),
         )
 
-
-    def adapter_name(self, estimator, *, allow_unsafe=False):
-        from xgboost import XGBRegressor
-        return super().adapter_name(
-            estimator,
-            allow_unsafe=allow_unsafe,
-            _class=XGBRegressor,
-        )
-
     def save(self, model, path, **kwargs):
         model.save_model(str(path))
 
@@ -79,35 +68,23 @@ class XGBoostAdapter(SklearnAdapter):
         model.load_model(str(path))
         return model
 
-    def fit(
+    def _fit(
         self,
-        estimator: Estimator,
-        X: ArrayLike,
-        y: ArrayLike,
+        estimator,
+        X,
+        y,
         *,
-        validation: Validation | None = None,
-        fit_kwargs: Mapping[str, ...] | None = None,
-        early_stopping_rounds=None,
-        loss: Loss | None = None,
-        censor: ArrayLike | None = None,
+        validation,
+        fit_kwargs,
+        early_stopping_rounds,
+        loss,
+        censor,
     ):
-        """Fit, training on ``loss`` where it needs a custom objective.
-
-        Censored targets default to ``Loss()``.
-        """
-        if censor is not None and loss is None:
-            loss = Loss()
-        _require_validation(validation, early_stopping_rounds)
-        kw = dict(fit_kwargs or {})
-
-        if "eval_set" in kw:
-            raise ValueError("Use validation= instead of fit.eval_set")
-
         # Modern XGBoost uses constructor parameters for these.
         params = {}
         for key in ("early_stopping_rounds", "callbacks"):
-            if key in kw:
-                params[key] = kw.pop(key)
+            if key in fit_kwargs:
+                params[key] = fit_kwargs.pop(key)
 
         if early_stopping_rounds is not None:
             if "early_stopping_rounds" in params:
@@ -123,10 +100,6 @@ class XGBoostAdapter(SklearnAdapter):
                 estimator.get_params()["early_stopping_rounds"],
             )
 
-        X, y, censor = _drop_masked(loss, X, y, censor, kw)
-        if validation is not None:
-            validation = _drop_masked(loss, *validation)
-
         loss_params = {}
         if loss is not None and loss.requires_objective(y, censor):
             loss_params["objective"] = _objective(loss, y, censor)
@@ -137,7 +110,7 @@ class XGBoostAdapter(SklearnAdapter):
             y = _finite_labels(y)
 
         if validation is not None:
-            kw["eval_set"] = [validation[:2]]
+            fit_kwargs["eval_set"] = [validation[:2]]
 
         with _temporary_params(estimator, **loss_params):
-            estimator.fit(X, y, **kw)
+            estimator.fit(X, y, **fit_kwargs)

@@ -172,6 +172,8 @@ Supported backends include:
 
 Additional estimators can be integrated through model adapters.
 
+A Box always holds its model as an `Ensemble`: a single estimator becomes a one-member ensemble named `model`, available as `box.model.members["model"]`.
+
 ### Ensembles
 
 Combine estimators directly through the Python API:
@@ -455,6 +457,8 @@ arvore train train.csv \
 
 This makes the same experiment definition reusable across model hyperparameters, datasets and automated workflows.
 
+`--model` swaps in a bundled model configuration: `random_forest`, `extra_trees`, `xgboost`, `lightgbm` or `catboost`, each with its library's default hyperparameters and a fixed random seed.
+
 ## Extending Arvore
 
 Arvore is designed to accommodate external estimators and prediction diagnostics with minimal integration code.
@@ -591,15 +595,15 @@ Here, `builder` is a callable that constructs the resource when it has not alrea
 
 Arvore hashes the canonical resource specification to obtain a deterministic cache key. Equivalent requests reuse the same prepared resource, including across scorer instances.
 
-Reference types supporting Arvore's checkpoint persistence can be saved and restored alongside the fitted model.
+To save and restore a reference with the fitted model, register its class for the specification's `type` with `arvore.scorers.register_reference`. The class implements `state_dict()`, returning a mapping of numeric arrays, and `from_state_dict(state, spec)`, and its specification sets `"version": 1`.
 
 This enables integration with external nearest-neighbour libraries, model-specific uncertainty implementations, density estimators or calibration methods without embedding their algorithms in `Box`.
 
 ### Model adapters
 
-Custom estimators can be supported through Arvore's adapter registry.
-
 Adapters, one module per model family in `arvore.models.adapters`, handle estimator-specific fitting (including Box losses), prediction, model capabilities and persistence. This allows scorers to request capabilities such as individual-tree predictions without depending directly on XGBoost, LightGBM, CatBoost or scikit-learn internals.
+
+To support another family, subclass `SklearnAdapter`, list the estimator classes it handles as import paths in `estimator_classes`, implement `_fit`, `save` and `load`, and register it with `register_adapter`. `SklearnAdapter.fit` already handles validation sets, early-stopping checks, masked rows and censored targets before calling `_fit`.
 
 ## Development
 

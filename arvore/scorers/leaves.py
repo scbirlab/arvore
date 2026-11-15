@@ -7,7 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .base import Requirements, ScoreContext
-from .registry import register_scorer
+from .registry import register_reference, register_scorer
 
 
 @dataclass(frozen=True)
@@ -173,6 +173,7 @@ def _decode_leaf(archive, calibrated):
 
 
 
+@register_reference("leaf_counts", "leaf_percentile")
 class LeafReferences(tuple):
     """Immutable collection of per-member leaf references."""
 
@@ -281,14 +282,9 @@ class InverseLeafOccupancy:
     def prepare(self, box, *, batch_size=1024):
         """Prepare shared reference resources once per fitted Box."""
         from ..models.adapters import get_adapter
-        from ..models.ensemble import Ensemble
         from .reference import feature_batches
 
-        models = (
-            tuple(box.model.members.values())
-            if isinstance(box.model, Ensemble)
-            else (box.model,)
-        )
+        models = tuple(box.model.members.values())
         counts_spec = {"type": "leaf_counts", "version": 1}
 
         def build_counts():
@@ -328,20 +324,7 @@ class InverseLeafOccupancy:
         )
 
     def __call__(self, context: ScoreContext) -> NDArray:
-        leaves = context.resources.get("leaf_indices")
         references = context.state
-
-        if leaves is None or references is None:
-            raise ValueError(
-                "inverse_leaf_occupancy requires candidate "
-                "leaf indices and training reference counts"
-            )
-
-        if len(leaves) != len(references):
-            raise ValueError(
-                "Reference and candidate model counts differ"
-            )
-
         member_scores = np.stack(
             [
                 (
@@ -350,28 +333,13 @@ class InverseLeafOccupancy:
                     else reference.inverse_score(query)
                 )
                 for reference, query in zip(
-                    references, leaves
+                    references, context.resources["leaf_indices"]
                 )
             ],
             axis=1,
         )
-
-        weights = context.member_weights
-
-        if weights is None:
-            weights = np.ones(len(references))
-
-        weights = np.asarray(weights, dtype=float)
-
-        if (
-            weights.shape != (len(references),)
-            or not np.all(np.isfinite(weights))
-            or np.any(weights <= 0)
-        ):
-            raise ValueError("Invalid member weights")
-
         return np.average(
             member_scores,
             axis=1,
-            weights=weights,
+            weights=context.member_weights,
         )

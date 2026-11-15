@@ -2,15 +2,12 @@
 *.so
 *.egg-info
 *.whl
-Hello.txt
 .DS_Store
 .mypy_cache/
 .pytest_cache/
 /cache
 /docs/build
 /docs/_autosummary
-/duvida/data/modelbox-names.json
-/test/duvida-checkpoint/
 .idea
 .vscode
 /test/*.tsv
@@ -22,7 +19,6 @@ catboost_info/
 
 /test/scripts/outputs/
 __pycache__/
-lightning_logs/
 *.log
 
 # virtualenv/venv directories

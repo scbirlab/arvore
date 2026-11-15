@@ -77,6 +77,3 @@ package-data = {"arvore" = [
 # https://pip.pypa.io/en/stable/reference/pip/#pep-517-and-518-support
 requires = ["setuptools>=68.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
-
-[test]
-deps = ["pytest>=7.4", "pytest-cov", "arvore[dev]"] 

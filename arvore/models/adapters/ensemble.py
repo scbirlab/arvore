@@ -7,8 +7,7 @@ from .sklearn import SklearnAdapter
 @register_adapter(name="ensemble", ext="json", package="arvore")
 class EnsembleAdapter(SklearnAdapter):
 
-    def adapter_name(self, estimator, *, allow_unsafe=False):
-        return self.name
+    estimator_classes = ("arvore.models.ensemble.Ensemble",)
 
     def save(self, model, path, *, allow_unsafe=False, **kwargs):
         model.save(path, allow_unsafe=allow_unsafe)
@@ -36,6 +35,7 @@ class EnsembleAdapter(SklearnAdapter):
         loss=None,
         censor=None,
     ):
+        """Fit each member through its own adapter."""
         from .dispatch import get_adapter
 
         for member in estimator.members.values():

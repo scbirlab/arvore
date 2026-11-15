@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from functools import cached_property
 
 from carabiner.decorators import decorator_with_params
+import numpy as np
 from numpy.typing import ArrayLike
 
 DEFAULT_LOSS: str = "squared_error"
@@ -44,16 +45,12 @@ def squared_error(prediction, lower, upper):
     ([2.0, 0.0, 0.5], [-2.0, 0.0, 1.0], [1.0, 0.0, 1.0])
 
     """
-    import numpy as np
-
     residual = prediction - np.clip(prediction, lower, upper)
     hessian = ((residual != 0.) | (lower == upper)).astype(float)
     return np.square(residual) / 2., residual, hessian
 
 
 def _row_weights(weight, shape):
-    import numpy as np
-
     if weight is None:
         return np.ones(shape)
     return np.broadcast_to(
@@ -122,8 +119,6 @@ class Loss:
         left-censored (true value at most the target), positive for
         right-censored (at least the target) and zero for exact targets.
         """
-        import numpy as np
-
         y = np.asarray(y, dtype=float)
         lower, upper = y.copy(), y.copy()
         if censor is not None:
@@ -141,8 +136,6 @@ class Loss:
         censor: ArrayLike | None = None,
     ) -> bool:
         """Whether training needs this loss as a custom objective."""
-        import numpy as np
-
         return (
             self.name != DEFAULT_LOSS
             or censor is not None
@@ -157,8 +150,6 @@ class Loss:
 
     def mean(self, prediction, lower, upper, weight=None) -> float:
         """Weighted mean loss over unmasked targets."""
-        import numpy as np
-
         value, _, _ = self.function(prediction, lower, upper)
         weight = _row_weights(weight, value.shape) * (
             np.isfinite(lower) | np.isfinite(upper)

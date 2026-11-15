@@ -37,3 +37,20 @@ def test_pearson_and_spearman():
     rho = spearman_r(y, x)
     assert r == pytest.approx(1.)
     assert rho == pytest.approx(1.)
+
+
+def test_resolve_metrics_names_callables_and_rejects_unknown():
+    from arvore.box.evaluation import resolve_metrics
+
+    def custom_error(y_true, y_pred):
+        return 0.
+
+    assert resolve_metrics([custom_error, mae, "rmse"]) == {
+        "custom_error": custom_error,
+        "mae": mae,
+        "rmse": rmse,
+    }
+    assert resolve_metrics(custom_error) == {"custom_error": custom_error}
+
+    with pytest.raises(ValueError, match="Unknown metric"):
+        resolve_metrics(["not_a_metric"])

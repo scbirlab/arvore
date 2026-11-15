@@ -1,15 +1,9 @@
 """Adapter for LightGBM estimators, persisted as native text boosters."""
 
-from collections.abc import Mapping
+import numpy as np
 
-from numpy.typing import ArrayLike
-
-from ..losses import Loss
-from ...typing import Estimator, Validation
 from .base import (
-    _drop_masked,
     _normalize_leaf_indices,
-    _require_validation,
     _temporary_params,
     register_adapter,
 )
@@ -63,6 +57,14 @@ def _metric(loss, y, censor):
 @register_adapter(name="lightgbm", ext="txt")
 class LightGBMAdapter(SklearnAdapter):
 
+    estimator_classes = (
+        "lightgbm.LGBMRegressor",
+        "arvore.models.adapters.lightgbm.LightGBMPredictor",
+    )
+    restored_trainable = False
+    supports_early_stopping = True
+    supports_custom_objective = True
+
     def capabilities(self, estimator):
         return frozenset({"leaf_indices"})
 
@@ -77,20 +79,6 @@ class LightGBMAdapter(SklearnAdapter):
         )
 
 
-    restored_trainable = False
-
-    def adapter_name(self, estimator, *, allow_unsafe=False):
-        from lightgbm import LGBMRegressor
-
-        if isinstance(estimator, LightGBMPredictor):
-            return self.name
-
-        return super().adapter_name(
-            estimator,
-            allow_unsafe=allow_unsafe,
-            _class=LGBMRegressor,
-        )
-
     def save(self, model, path, **kwargs):
         # Explicitly preserve the trained ensemble, including
         # its best-iteration prediction behaviour.
@@ -102,48 +90,31 @@ class LightGBMAdapter(SklearnAdapter):
         booster = lgb.Booster(model_file=str(path))
         return LightGBMPredictor(booster)
 
-    def fit(
+    def _fit(
         self,
-        estimator: Estimator,
-        X: ArrayLike,
-        y: ArrayLike,
+        estimator,
+        X,
+        y,
         *,
-        validation: Validation | None = None,
-        fit_kwargs: Mapping[str, ...] | None = None,
-        early_stopping_rounds: int | None = None,
-        loss: Loss | None = None,
-        censor: ArrayLike | None = None,
+        validation,
+        fit_kwargs,
+        early_stopping_rounds,
+        loss,
+        censor,
     ):
-        """Fit a single target, training on ``loss`` where it needs a custom objective.
-
-        Censored targets default to ``Loss()``.
-        """
-        import numpy as np
-
         if np.ndim(y) > 1 and np.shape(y)[1] > 1:
             raise NotImplementedError("LightGBM supports a single target")
-        if censor is not None and loss is None:
-            loss = Loss()
-        _require_validation(validation, early_stopping_rounds)
-        kw = dict(fit_kwargs or {})
 
-        if {"eval_set", "eval_X", "eval_y"} & kw.keys():
-            raise ValueError(
-                "Use validation= instead of fit.eval_set/eval_X/eval_y"
-            )
-
-        X, y, censor = _drop_masked(loss, X, y, censor, kw)
         if validation is not None:
-            validation = _drop_masked(loss, *validation)
             X_val, y_val, censor_val = validation
             if _lightgbm_has_eval_xy(estimator):
-                kw["eval_X"], kw["eval_y"] = (X_val,), (y_val,)
+                fit_kwargs["eval_X"], fit_kwargs["eval_y"] = (X_val,), (y_val,)
             else:
-                kw["eval_set"] = [(X_val, y_val)]
+                fit_kwargs["eval_set"] = [(X_val, y_val)]
 
-        callbacks = list(kw.pop("callbacks", None) or [])
+        callbacks = list(fit_kwargs.pop("callbacks", None) or [])
 
-        if "early_stopping_rounds" in kw:
+        if "early_stopping_rounds" in fit_kwargs:
             raise ValueError(
                 "Pass early_stopping_rounds directly to Box.fit()"
             )
@@ -164,14 +135,14 @@ class LightGBMAdapter(SklearnAdapter):
             )
 
         if callbacks:
-            kw["callbacks"] = callbacks
+            fit_kwargs["callbacks"] = callbacks
 
         loss_params = {}
         if loss is not None and loss.requires_objective(y, censor):
             # Built-in metrics would score censoring bounds as exact targets.
             loss_params.update(objective=_objective(loss, y, censor), metric="None")
             if validation is not None:
-                kw["eval_metric"] = _metric(loss, y_val, censor_val)
+                fit_kwargs["eval_metric"] = _metric(loss, y_val, censor_val)
 
         with _temporary_params(estimator, **loss_params):
-            estimator.fit(X, y, **kw)
+            estimator.fit(X, y, **fit_kwargs)

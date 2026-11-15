@@ -1,30 +1,24 @@
 # Installation
 
-## The easy way
-
-Install the pre-compiled version from GitHub:
+Python 3.11 or later is required.
 
 ```bash
-$ pip install carabiner-tools
+pip install arvore
 ```
 
-If you want to use the `tensorflow`, `pandas`, or `matplotlib` utilities, these must be installed separately
-or together:
+Model backends and feature tools are optional:
 
 ```bash
-$ pip install carabiner-tools[deep]
-# or
-$ pip install carabiner-tools[pd]
-# or
-$ pip install carabiner-tools[mpl]
-# or
-$ pip install carabiner-tools[all]
+pip install "arvore[trees]"  # XGBoost and LightGBM
+pip install "arvore[cat]"    # CatBoost
+pip install "arvore[chem]"   # Molecular fingerprints and descriptors
+pip install "arvore[bio]"    # Biological feature tools
 ```
 
 ## From source
 
-Clone the repository, then `cd` into it. Then run:
-
 ```bash
-pip install -e .
+git clone https://github.com/scbirlab/arvore.git
+cd arvore
+pip install -e ".[dev]"
 ```

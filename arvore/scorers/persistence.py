@@ -12,6 +12,7 @@ import os
 import numpy as np
 
 from .references import canonical_spec, reference_key
+from .registry import REFERENCE_TYPES
 
 
 FORMAT_VERSION: int = 1
@@ -52,24 +53,8 @@ def fitted_state_digest(checkpoint, config):
 
 
 
-def reference_types():
-    """Registry of supported safe reference formats."""
-    from .leaves import LeafReferences
-    from .distances import FeatureReference
-    from .tanimoto import TanimotoReference, ReferenceLabels
-
-    return {
-        "leaf_counts": LeafReferences,
-        "leaf_percentile": LeafReferences,
-        "feature_distance": FeatureReference,
-        "tanimoto": TanimotoReference,
-        "tanimoto_labels": ReferenceLabels,
-    }
-
-
 def validate_requested(requested, entries):
     """Explicitly requested references must be persistable."""
-    types = reference_types()
 
     for key in requested:
         if key not in entries:
@@ -79,7 +64,7 @@ def validate_requested(requested, entries):
 
         spec, value = entries[key]
         kind = spec["type"]
-        cls = types.get(kind)
+        cls = REFERENCE_TYPES.get(kind)
 
         if (
             cls is None
@@ -94,7 +79,6 @@ def validate_requested(requested, entries):
 
 def save_references(checkpoint, entries, state_digest):
     """Persist supported reference state dictionaries."""
-    types = reference_types()
     stored = []
 
     for key, (spec, value) in sorted(entries.items()):
@@ -106,7 +90,7 @@ def save_references(checkpoint, entries, state_digest):
             )
 
         kind = spec["type"]
-        cls = types.get(kind)
+        cls = REFERENCE_TYPES.get(kind)
 
         # In-memory-only references may remain uncached on disk.
         # Explicit save requests are checked separately.
@@ -199,7 +183,6 @@ def load_references(box, checkpoint, metadata, config):
             "Invalid reference checkpoint entries"
         )
 
-    types = reference_types()
     recovered = {}
 
     for item in items:
@@ -211,7 +194,7 @@ def load_references(box, checkpoint, metadata, config):
         spec = canonical_spec(item["spec"])
         key = reference_key(spec)
         kind = spec["type"]
-        cls = types.get(kind)
+        cls = REFERENCE_TYPES.get(kind)
 
         if (
             key != item.get("key")

@@ -1,0 +1,4 @@
+{
+    "class_path": "xgboost.XGBRegressor",
+    "init_args": {"random_state": 42}
+}

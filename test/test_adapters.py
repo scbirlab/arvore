@@ -163,3 +163,22 @@ def test_native_serialization_preferred_over_joblib():
             ).name
             == expected
         )
+
+
+def test_overlapping_adapters_are_ambiguous(monkeypatch, fitted_rf):
+    from arvore.models.adapters import SklearnAdapter
+
+    class ForestAdapter(SklearnAdapter):
+        name = "forest"
+        estimator_classes = ("sklearn.ensemble.RandomForestRegressor",)
+
+    class AnotherForestAdapter(ForestAdapter):
+        name = "another_forest"
+
+    model, _ = fitted_rf
+    monkeypatch.setitem(ADAPTERS, "forest", ForestAdapter())
+    assert get_adapter(model) is ADAPTERS["forest"]
+
+    monkeypatch.setitem(ADAPTERS, "another_forest", AnotherForestAdapter())
+    with pytest.raises(TypeError, match="Several adapters"):
+        get_adapter(model)

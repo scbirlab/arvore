@@ -6,7 +6,7 @@ from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 
 from arvore import Box, Loss
-from arvore.box.base import _exact_observed
+from arvore.box.evaluation import exact_observed
 from arvore.models import get_adapter
 from arvore.models.adapters import load_model, save_model
 from arvore.models.losses import LOSSES, resolve_loss, squared_error
@@ -434,21 +434,21 @@ def test_box_without_loss_keeps_missing_targets_an_error(censored_dataset):
         box.fit(data, skip_eval=True)
 
 
-def test_exact_observed():
+def testexact_observed():
     y_true = np.array([[1., 5.], [5., np.nan], [5., 2.]])
     y_pred = np.array([[2., 7.], [3., 0.], [7., 1.]])
     censor = np.array([[0, 1], [0, 0], [-1, 0]])
 
     np.testing.assert_array_equal(
-        np.concatenate(_exact_observed(y_true, y_pred, censor, masked=True)),
+        np.concatenate(exact_observed(y_true, y_pred, censor, masked=True)),
         [1., 5., 2., 2., 3., 1.],
     )
     unfiltered = y_true[:, :1], y_pred[:, :1]
-    for returned, given in zip(_exact_observed(*unfiltered), unfiltered):
+    for returned, given in zip(exact_observed(*unfiltered), unfiltered):
         np.testing.assert_array_equal(returned, given)
 
     with pytest.raises(ValueError, match="No exact, observed targets"):
-        _exact_observed(y_true[:1, 1:], y_pred[:1, 1:], censor[:1, 1:])
+        exact_observed(y_true[:1, 1:], y_pred[:1, 1:], censor[:1, 1:])
 
 
 def exact_rmsd(predicted):
@@ -511,3 +511,23 @@ def test_box_fit_validation_checkpoint_roundtrip(tmp_path):
         np.asarray(restored_predicted["prediction:y"]),
         np.asarray(predicted["prediction:y"]),
     )
+
+
+def test_box_fit_forwards_loss_and_censor(monkeypatch, censored_dataset):
+    from arvore.models.adapters import EnsembleAdapter
+
+    data, _ = censored_dataset
+    received = {}
+    monkeypatch.setattr(
+        EnsembleAdapter,
+        "fit",
+        lambda self, estimator, X, y, **kwargs: received.update(kwargs),
+    )
+    box = Box.from_config(box_config(censor="qualifier", loss={"masked": True}))
+
+    box.fit(data, skip_eval=True, verbose=False)
+
+    assert received["loss"] == Loss(masked=True)
+    np.testing.assert_array_equal(received["censor"], data["qualifier"])
+    assert received["fit_kwargs"] == {"verbose": False}
+

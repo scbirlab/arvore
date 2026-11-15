@@ -4,9 +4,9 @@ from argparse import Namespace
 
 from carabiner.cliutils import clicommand
 
-from ..box import Box
 from ..box.base import DEFAULT_BATCH_SIZE
 from ..config.instantiate import apply_overrides
+from .common import load_box, selected_rows
 from .scoring import resolve_cli_scores
 
 
@@ -32,29 +32,9 @@ def _predict(args: Namespace) -> None:
         names=args.score,
     )
 
-    box = Box.load(
-        args.input_file,
-        cache_dir=args.cache,
-        trusted_types=(
-            ("sklearn.tree._tree.Tree",)
-            if args.trust_sklearn_trees
-            else ()
-        ),
-    )
+    box = load_box(args)
 
-    if args.data is not None:
-        resolved = (
-            DataResolver(args.data)
-            .select_rows(args.start, args.stop)
-        )
-        data = resolved.data
-
-    else:
-        if args.start is not None or args.stop is not None:
-            raise ValueError(
-                "--start and --stop require --data"
-            )
-        data = None
+    data = selected_rows(args)
 
     result = box.predict(
         data,

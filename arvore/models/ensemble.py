@@ -5,6 +5,8 @@ from math import isfinite
 from pathlib import Path
 import os
 
+import numpy as np
+
 from ..typing import Estimator
 
 DEFAULT_SEED: int = 42
@@ -302,7 +304,6 @@ class Ensemble:
         X,
         **kwargs
     ):
-        import numpy as np
         from .adapters import get_adapter
 
         predictions = []
@@ -337,8 +338,6 @@ class Ensemble:
         disaggregate: bool = False, 
         **kwargs
     ):
-        import numpy as np
-
         members = self.predict_members(X, **kwargs)
 
         if not disaggregate:
