@@ -1,20 +1,32 @@
 [project]
 name = "arvore"
-version = "0.0.7"
+version = "0.1.0"
 authors = [
-  { name="Eachan Johnson", email="eachan.johnson@crick.ac.uk" },
+  { 
+    name="Eachan Johnson", 
+    email="eachan.johnson@crick.ac.uk",
+  },
 ]
-description = "Reproducible tree-based machine learning."
+description = "🌳 Reproducible tree-based machine learning with ensembles, portable checkpoints, and extensible uncertainty and novelty scoring."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = [
-  "ai",
   "active-learning", 
   "bayesian-optimization",
+  "catboost",
   "data",
   "deep-learning",
+  "lightgbm",
   "machine-learning",
+  "novelty-detection",
+  "random-forest",
+  "reproducible-research",
+  "scikit-learn",
+  "tree",
+  "uncertainty-quantification",
+  "xgboost",
 ]
 
 classifiers = [  
@@ -24,8 +36,6 @@ classifiers = [
   # Indicate who your project is intended for
   "Intended Audience :: Science/Research",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
-
-  "License :: OSI Approved :: MIT License",
 
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
