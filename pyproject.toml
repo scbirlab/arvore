@@ -2,10 +2,7 @@
 name = "arvore"
 version = "0.1.0"
 authors = [
-  { 
-    name="Eachan Johnson", 
-    email="eachan.johnson@crick.ac.uk",
-  },
+  { name = "Eachan Johnson", email = "eachan.johnson@crick.ac.uk" },
 ]
 description = "🌳 Reproducible tree-based machine learning with ensembles, portable checkpoints, and extensible uncertainty and novelty scoring."
 readme = "README.md"
