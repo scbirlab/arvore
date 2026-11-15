@@ -3,11 +3,6 @@
 from collections.abc import Mapping
 
 
-def training_data(box):
-    """Resolve the fitted training data retained by Box."""
-    return box._training_reference()
-
-
 def iter_batches(data, batch_size):
     """Re-iterable Dataset or column-mapping batches."""
     if batch_size < 1:
@@ -38,13 +33,13 @@ def iter_batches(data, batch_size):
 
 def feature_batches(box, *, batch_size):
     """Yield model-space feature matrices from fitted training data."""
-    from ..box.base import _matrix
+    from ..tabular import matrix
 
-    for batch in iter_batches(box._training_reference(), batch_size):
+    for batch in iter_batches(box.training_data, batch_size):
         if not batch:
             continue
 
-        (X,) = _matrix(
+        (X,) = matrix(
             batch,
             box.pipeline,
             (box.features,),

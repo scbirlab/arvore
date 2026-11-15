@@ -6,8 +6,9 @@ from typing import ClassVar
 import numpy as np
 from numpy.typing import NDArray
 
+from ..tabular import unwrap
 from .base import Requirements, ScoreContext
-from .registry import register_scorer
+from .registry import register_reference, register_scorer
 
 
 def _encode_fingerprints(fingerprints, n_bits=None):
@@ -52,6 +53,7 @@ def _encode_fingerprints(fingerprints, n_bits=None):
     return packed, counts, bits.shape[1]
 
 
+@register_reference("tanimoto")
 @dataclass(frozen=True)
 class TanimotoReference:
     """Packed fingerprints for exact Tanimoto nearest-neighbour search."""
@@ -132,7 +134,7 @@ class TanimotoReference:
         if query_chunk < 1 or reference_chunk < 1:
             raise ValueError("Chunk sizes must be positive")
 
-        queries, q_counts, _ = _encode_fingerprints(
+        queries, query_counts, _ = _encode_fingerprints(
             fingerprints, n_bits=self.n_bits
         )
         distances = np.empty(len(queries), dtype=np.float64)
@@ -146,9 +148,9 @@ class TanimotoReference:
         )
 
         for start in range(0, len(queries), query_chunk):
-            q = queries[start:start + query_chunk]
-            qc = q_counts[start:start + query_chunk]
-            width = len(q)
+            query = queries[start:start + query_chunk]
+            query_popcount = query_counts[start:start + query_chunk]
+            width = len(query)
 
             best_sim = np.full(
                 (width, n_neighbors), -np.inf, dtype=np.float64
@@ -160,14 +162,14 @@ class TanimotoReference:
             )
 
             for offset in range(0, len(self.packed), reference_chunk):
-                r = self.packed[offset:offset + reference_chunk]
-                rc = self.counts[offset:offset + reference_chunk]
+                reference = self.packed[offset:offset + reference_chunk]
+                reference_popcount = self.counts[offset:offset + reference_chunk]
 
                 intersection = np.bitwise_count(
-                    np.bitwise_and(q[:, None, :], r[None, :, :])
+                    np.bitwise_and(query[:, None, :], reference[None, :, :])
                 ).sum(axis=2, dtype=np.int32)
 
-                union = qc[:, None] + rc[None, :] - intersection
+                union = query_popcount[:, None] + reference_popcount[None, :] - intersection
                 similarity = np.divide(
                     intersection,
                     union,
@@ -176,7 +178,7 @@ class TanimotoReference:
                 )
 
                 index = np.broadcast_to(
-                    np.arange(offset, offset + len(r), dtype=np.int64),
+                    np.arange(offset, offset + len(reference), dtype=np.int64),
                     similarity.shape,
                 )
 
@@ -223,6 +225,7 @@ class TanimotoReference:
         return distances
 
 
+@register_reference("tanimoto_labels")
 @dataclass(frozen=True)
 class ReferenceLabels:
     """Row-aligned string representations of reference observations."""
@@ -314,12 +317,7 @@ class TanimotoDistance:
             [self.structure_column]
         )
 
-        transformed = self._fingerprint_pipeline()(source)
-
-        # Aspect returns a Providence DataResolver.
-        if hasattr(transformed, "data"):
-            transformed = transformed.data
-
+        transformed = unwrap(self._fingerprint_pipeline()(source))
         fingerprints = transformed.with_format(None)[
             self.column
         ]
@@ -387,7 +385,7 @@ class TanimotoDistance:
 
     def _reference_data(self, box):
         """Find raw or retained rows in reference order."""
-        data = box._training_reference()
+        data = box.training_data
         required = {self.column}
         if self.return_neighbors:
             required.add(self.neighbor_column)
@@ -395,7 +393,7 @@ class TanimotoDistance:
         if not required.issubset(set(data.column_names)):
             source = getattr(box.pipeline, "data_in", None)
             if source is not None:
-                source = box._unwrap(source)
+                source = unwrap(source)
                 if hasattr(source, "with_format"):
                     source = source.with_format(None)
                 if hasattr(source, "column_names"):

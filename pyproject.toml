@@ -1,20 +1,29 @@
 [project]
 name = "arvore"
-version = "0.0.7"
+version = "0.1.0"
 authors = [
-  { name="Eachan Johnson", email="eachan.johnson@crick.ac.uk" },
+  { name = "Eachan Johnson", email = "eachan.johnson@crick.ac.uk" },
 ]
-description = "Reproducible tree-based machine learning."
+description = "🌳 Reproducible tree-based machine learning with ensembles, portable checkpoints, and extensible uncertainty and novelty scoring."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = [
-  "ai",
   "active-learning", 
   "bayesian-optimization",
+  "catboost",
   "data",
   "deep-learning",
+  "lightgbm",
   "machine-learning",
+  "novelty-detection",
+  "random-forest",
+  "reproducible-research",
+  "scikit-learn",
+  "tree",
+  "uncertainty-quantification",
+  "xgboost",
 ]
 
 classifiers = [  
@@ -24,8 +33,6 @@ classifiers = [
   # Indicate who your project is intended for
   "Intended Audience :: Science/Research",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
-
-  "License :: OSI Approved :: MIT License",
 
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -51,8 +58,8 @@ chem = ["schemist>=0.1.2"]
 bio = ["vectome>=0.0.7"]
 cat = ["catboost>=1.2"]
 lgbm = ["lightgbm[arrow,scikit-learn,plotting]>=4.0"]
-xgb = ["xgboost_cpu"]
-xgb_cuda12 = ["xgboost-cu12"]
+xgb = ["xgboost_cpu>=3.0"]
+xgb_cuda12 = ["xgboost-cu12>=3.0"]
 xgb_cuda13 = ["xgboost>=3.0"]
 trees = ["arvore[xgb,lgbm]"]
 dev = ["arvore[chem,bio,trees]", "pytest>=7.4", "flake8"]
@@ -77,6 +84,3 @@ package-data = {"arvore" = [
 # https://pip.pypa.io/en/stable/reference/pip/#pep-517-and-518-support
 requires = ["setuptools>=68.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
-
-[test]
-deps = ["pytest>=7.4", "pytest-cov", "arvore[dev]"] 

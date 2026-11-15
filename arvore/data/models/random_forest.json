@@ -1,0 +1,4 @@
+{
+    "class_path": "sklearn.ensemble.RandomForestRegressor",
+    "init_args": {"random_state": 42}
+}

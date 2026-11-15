@@ -1,7 +1,5 @@
 """Reference leaf occupancy tests."""
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 from datasets import Dataset
@@ -10,11 +8,13 @@ from sklearn.ensemble import (
     RandomForestRegressor,
 )
 
-from arvore import Box, Ensemble
+from arvore import Ensemble
 from arvore.models.adapters import get_adapter
 from arvore.scorers.leaves import (
     LeafReferenceBuilder,
 )
+
+from helpers import bare_box
 
 
 def test_sparse_leaf_reference():
@@ -89,23 +89,11 @@ def datasets_and_models():
 
 
 def make_box(model, reference, candidates):
-    box = Box.__new__(Box)
-    box.model = model
-    box.features = ("x0", "x1", "x2", "x3")
-    box.target = ("y",)
-
-    pipeline = SimpleNamespace(
-        data_in=None,
-        data_out=reference,
-        column_transforms={},
-    )
-
-    box.pipeline = pipeline
-
-    # Keep this test independent of Aspect transformation.
-    box._pre_predict = lambda **kwargs: (
-        candidates,
-        pipeline,
+    box = bare_box(
+        model,
+        ("x0", "x1", "x2", "x3"),
+        reference=reference,
+        candidates=candidates,
     )
 
     return box

@@ -4,297 +4,61 @@ from typing import TYPE_CHECKING, Any
 from collections.abc import Callable, Mapping, Iterable
 from copy import deepcopy
 from pathlib import Path
-import json
 import os
 
 from providence.io import save_json, load_json
 
 if TYPE_CHECKING:
     from aspect import DataPipeline
-    from datasets import Dataset, IterableDataset
+    from datasets import Dataset
 else:
     DataPipeline = Any
-    Dataset, IterableDataset = Any, Any
+    Dataset = Any
 
-from ..config.instantiate import instantiate_object
-from ..metrics import DEFAULT_METRICS, METRICS_REGISTRY
 from ..models.ensemble import Ensemble
+from ..models.losses import Loss, resolve_loss
+from ..prediction import DEFAULT_PREDICTION_COLUMN, predict_map_batch
+from ..tabular import is_dataset, matrix, resolve_pipeline, unwrap
 from ..typing import Estimator, DataLike, PipelineLike
+from .evaluation import exact_observed, resolve_metrics, targets_and_censor
+from .identity import (
+    box_fingerprint,
+    operation_fingerprint,
+    pipeline_identity,
+    training_identity,
+)
 
-CONFIG_FILENAME = "config.json"
 DEFAULT_BATCH_SIZE: int = 1024
-DEFAULT_PREDICTION_COLUMN: str = "prediction"
-
-
-def _is_dataset(data):
-    from datasets import Dataset
-    return isinstance(data, Dataset)
-
-
-def _pipeline_identity(pipeline):
-    """Fitted preprocessing identity from its config, never its data."""
-    from datasets.fingerprint import Hasher
-
-    if pipeline is None:
-        return None
-    if callable(getattr(pipeline, "to_config", None)):
-        return pipeline.to_config()
-    return Hasher.hash(pipeline)
-
-
-def _data_identity(data):
-    """Content checksum of retained data, independent of storage layout."""
-    from pandas import DataFrame
-    from providence.io import dataframe_checksum
-
-    if data is None:
-        return None
-    if _is_dataset(data):
-        return dataframe_checksum(data.with_format(None).to_pandas())
-    return dataframe_checksum(DataFrame(dict(data)))
-
-
-def _json_copy(
-    value: Mapping[Any, ...],
-) -> dict[str, ...]:
-    """Return a JSON-native copy, validating serializability."""
-    return json.loads(json.dumps(value))
-
-
-def _resolve_pipeline(
-    pipeline: PipelineLike | None = None,
-    *,
-    cache_dir: str | None = None,
-) -> DataPipeline:
-    """Resolve an Aspect pipeline or its declarative configuration."""
-    from aspect import DataPipeline
-
-    if isinstance(pipeline, DataPipeline):
-        return pipeline
-
-    if pipeline is None:
-        pipeline = {}
-
-    if isinstance(pipeline, os.PathLike):
-        pipeline = os.fspath(pipeline)
-
-    if isinstance(pipeline, (str, Mapping)):
-        return DataPipeline.from_config(
-            pipeline,
-            cache_dir=cache_dir,
-        )
-
-    raise TypeError(
-        "pipeline must be an Aspect DataPipeline, "
-        "a configuration mapping, or a JSON filename; "
-        f"received {type(pipeline).__name__}"
-    )
-
-
-def _resolve_metrics(
-    metrics: Iterable[str | Callable] | Mapping[str, str | Callable] | None = None
-):
-    if metrics is None:
-        metrics = DEFAULT_METRICS
-    if isinstance(metrics, str):
-        metrics = [metrics]
-    if isinstance(metrics, (tuple, list)):
-        new_metrics = {}
-        for m in metrics:
-            if callable(m):
-                _m = str(m.__class__.__name__)
-            elif isinstance(m, str):
-                _m = m
-            else:
-                raise TypeError(f"Metrics must be callable or str, but was {type(m)}: {m}")
-            new_metrics[_m] = m
-    elif isinstance(metrics, Mapping):
-        new_metrics = dict(metrics)
-    else:
-        raise TypeError(
-            f"Metrics must be mapping or list, but was {type(metrics)}: {metrics}"
-        )
-    _metrics = {}
-    for k, v in new_metrics.items():
-        if isinstance(v, str):
-            _v = METRICS_REGISTRY.get(v)
-        elif callable(v):
-            _v = v
-        else:
-            raise TypeError(
-                f"Metrics must be callable or supported str, but was {type(v)}: {v}\n"
-                f"Supported: {METRICS_REGISTRY}"
-            ) 
-        _metrics[k] = _v
-    return _metrics
-
-
-def _col_names(dataset: Dataset | IterableDataset | Mapping) -> list[str]:
-    from datasets import Dataset, IterableDataset
-    if isinstance(dataset, (Dataset, IterableDataset)):
-        return dataset.column_names
-    elif isinstance(dataset, Mapping):
-        return list(dataset)
-    else:
-        raise ValueError(f"Can't get column names for {type(dataset)}: {dataset}")
-    
-
-def _data_len(dataset: Dataset | IterableDataset | Mapping) -> int:
-    from datasets import Dataset, IterableDataset
-    if isinstance(dataset, Dataset):
-        return len(dataset)
-    elif isinstance(dataset, IterableDataset):
-        for i, _ in enumerate(dataset):
-            pass
-        return i + 1
-    elif isinstance(dataset, Mapping):
-        lens = {k: len(v) for k, v in dataset.items()}
-        if len(set(lens.values())) == 1:
-            return next(iter(lens.values()))
-        else:
-            raise AttributeError(
-                f"Column lengths of Mapping are inconsistent: {lens}"
-            )
-    else:
-        raise ValueError(f"Can't get number of rows for {type(dataset)}: {dataset}")
-
-
-def get_transformed_column(
-    column: str, 
-    dataset: Dataset | IterableDataset | Mapping, 
-    pipeline: DataPipeline
-) -> str:
-    transforms = pipeline.column_transforms.get(column, ())
-    column_names = _col_names(dataset)
-    if len(transforms) > 0:
-        generated_column = transforms[-1].output_column
-        if generated_column in column_names:
-            return generated_column
-    if column in column_names:
-        return column
-    raise KeyError(
-        f"Column or Aspect transform {column} unavailable. "
-        f"Available columns: {column_names}"
-    )
-
-
-def _matrix(
-    dataset: Dataset | Mapping, 
-    pipeline: DataPipeline,
-    column_groups: Iterable[Iterable[str]]
-):
-    import numpy as np
-    if len(dataset) == 0:
-        raise ValueError(f"No rows in dataset: {dataset}")
-    blocks = ()
-    for col_group in column_groups:
-        group_blocks = []
-        for feature in col_group:
-            column_name = get_transformed_column(
-                feature, 
-                dataset, 
-                pipeline,
-            )
-            values = dataset[column_name]
-            try:
-                values = np.asarray(values)
-                if values.dtype == object:
-                    values = np.stack(list(values))
-                values = values.reshape(_data_len(dataset), -1)
-            except (TypeError, ValueError) as error:
-                raise ValueError(f"Feature {feature!r} is not a regular array: {dataset[column_name]}") from error
-            if not np.issubdtype(values.dtype, np.number):
-                raise TypeError(f"Feature {feature!r} must be numeric, got {values.dtype}")
-            group_blocks.append(values)
-        group_blocks = np.concatenate(group_blocks, axis=1)
-        blocks += (group_blocks,)
-    return blocks
-    
-
-def _predict_map_batch(
-    batch: Mapping[str, ...],
-    *,
-    model,
-    column_groups: Iterable[Iterable[str]],
-    pipeline: DataPipeline,
-    prediction_column: str = DEFAULT_PREDICTION_COLUMN,
-    kwargs: Mapping | None = None,
-    scoring=None,
-) -> dict[str, ...]:
-    from ..prediction import predict_batch
-    from ..scorers import ScoreContext
-
-    feature_cols, target_cols = column_groups
-
-    (X,) = _matrix(
-        batch,
-        pipeline,
-        column_groups=(feature_cols,),
-    )
-
-    result = predict_batch(
-        model,
-        X,
-        targets=tuple(target_cols),
-        prediction_column=prediction_column,
-        kwargs=kwargs,
-        needs_trees=(
-            scoring.needs_trees if scoring else False
-        ),
-        needs_leaves=(
-            scoring.needs_leaves if scoring else False
-        ),
-    )
-
-    output = batch | dict(result.columns)
-
-    if scoring is None:
-        return output
-
-    context = ScoreContext(
-        box=scoring.box,
-        X=X,
-        predictions=result.predictions,
-        model=model,
-        batch=batch,
-        targets=tuple(target_cols),
-        member_predictions=result.member_predictions,
-        member_weights=result.member_weights,
-        tree_predictions=result.tree_predictions,
-        resources=result.resources,
-    )
-
-    output.update(
-        scoring.score(
-            context,
-            occupied=output.keys(),
-        )
-    )
-
-    return output
 
 
 class Box:
     """Data processing, and model training.
 
-    A Box constructed with :meth:`from_config` retains the declarative model
-    specification used to construct its model.
+    The model is always held as an :class:`arvore.Ensemble`; a single
+    estimator becomes a one-member ensemble. A Box constructed with
+    :meth:`from_config` retains the declarative model specification used to
+    construct its model. One constructed from existing estimators has no
+    reconstruction recipe, but can still be checkpointed.
 
-    A Box constructed directly from an arbitrary existing model has
-    no generic reconstruction recipe. Such Boxes remain supported and fall
-    back to whole-model serialization.
+    ``censor`` names numeric columns, one per target, of censoring
+    indicators: negative for left-censored values (the true value is at
+    most the target), positive for right-censored (at least the target)
+    and zero for exact values. Censored targets train on ``loss``, by
+    default :class:`arvore.Loss`. A ``loss`` (name, mapping of
+    :class:`arvore.Loss` fields, importable function or
+    :class:`arvore.Loss`) can also mask missing targets. Both are
+    checkpointed with the Box.
 
     """
-
-    SCHEMA_VERSION: int = 2
 
     def __init__(
         self,
         model: Estimator,
         features: str | Iterable[str],
         target: str | Iterable[str],
+        censor: str | Iterable[str] | None = None,
+        loss: str | Mapping[str, ...] | Callable | Loss | None = None,
         pipeline: PipelineLike | os.PathLike | str | None = None,
-        # TODO: Make type hints more specific
         model_config: Mapping[str, ...] | None = None,
         cache_dir: str | None = None
     ):
@@ -302,11 +66,20 @@ class Box:
             features = (features,)
         if isinstance(target, str):
             target = (target,)
+        if isinstance(censor, str):
+            censor = (censor,)
         features, target = tuple(features), tuple(target)
+        if censor is not None:
+            censor = tuple(censor)
+            if len(censor) != len(target):
+                raise ValueError(
+                    f"censor must name one column per target, but {censor} "
+                    f"does not match {target}"
+                )
         if len(features) == 0:
             raise ValueError("features must be a nonempty list of column names")
         if len(target) == 0:
-            raise ValueError("features must be a nonempty list of column names")
+            raise ValueError("target must be a nonempty list of column names")
         if not all(isinstance(f, str) and f for f in features):
             raise ValueError("features must contain nonempty strings")
         if not all(isinstance(f, str) and f for f in target):
@@ -316,31 +89,22 @@ class Box:
             and callable(getattr(model, "predict", None))
         ):
             raise TypeError("model must implement .fit(X, y) and .predict(X) methods")
-        
-        from providence import DataResolver
 
-        self.pipeline = _resolve_pipeline(
+        self.pipeline = resolve_pipeline(
             pipeline,
             cache_dir=cache_dir,
         )
-        self.model = model
+        self.model = model if isinstance(model, Ensemble) else Ensemble(model)
+        if model_config is not None:
+            self.model._attach_config(model_config)
         self.features = features
         self.target = target
-
-        from ..models.ensemble import Ensemble
-
-        self._model_config_fallback = None
-
-        if isinstance(self.model, Ensemble):
-            if model_config is not None:
-                self.model._attach_config(model_config)
-        elif model_config is not None:
-            # Compatibility with arbitrary, non-Ensemble estimators.
-            self._model_config_fallback = _json_copy(model_config)
-        self._validation_score = None
+        self.censor = censor
+        self.loss = resolve_loss(loss)
         self._references = None
+        self._validation_score = None
         self._fingerprint = None
-        self._model_digest_cache = None
+        self._training_identity = training_identity(self.pipeline)
 
     @property
     def references(self):
@@ -350,7 +114,10 @@ class Box:
         Do not fit and predict concurrently on a Box.
         """
         from ..scorers.references import ReferenceCache
-        if getattr(self, "_references", None) is None:
+
+        # Created on first use: a Box without prepared references stays
+        # picklable, for example inside scorer closures hashed by Datasets.
+        if self._references is None:
             self._references = ReferenceCache()
         return self._references
 
@@ -358,79 +125,17 @@ class Box:
     def fingerprint(self) -> str:
         """Deterministic identity of the fitted Box.
 
-        Built from content digests of the fitted model (via its adapter),
-        the preprocessing config, features, targets and the retained
-        training data. Stable across save and load. Computed once per
-        fit or load.
+        Built from the content digest of the fitted model, the preprocessing
+        config, features, targets and the provenance of the training data.
+        Stable across save and load. Computed once per fit or load.
         """
-        if getattr(self, "_fingerprint", None) is None:
-            from datasets.fingerprint import Hasher
-            from aspect import __version__ as aspect_version
-            from .. import __version__
-
-            self._fingerprint = Hasher.hash({
-                "arvore": __version__,
-                "aspect": aspect_version,
-                "model": self._model_digest(),
-                "pipeline": _pipeline_identity(
-                    getattr(self, "pipeline", None)
-                ),
-                "features": list(self.features),
-                "target": list(self.target),
-                "training": self._training_digest(),
-            })
+        if self._fingerprint is None:
+            self._fingerprint = box_fingerprint(self)
         return self._fingerprint
-
-    def _model_digest(self) -> str:
-        """Content digest of the fitted model, stable across save and load.
-
-        Estimators without a safe codec fall back to an in-process hash,
-        which is not stable across load.
-        """
-        if getattr(self, "_model_digest_cache", None) is None:
-            from ..models.adapters import model_digest
-
-            try:
-                digest = model_digest(self.model)
-            except TypeError:
-                from datasets.fingerprint import Hasher
-                digest = "in-process:" + Hasher.hash(self.model)
-            self._model_digest_cache = digest
-        return self._model_digest_cache
-
-    def _training_digest(self) -> str | None:
-        try:
-            training = self._training_reference()
-        except (AttributeError, ValueError):
-            return None
-        return _data_identity(training)
-
-    def _map_fingerprint(self, dataset, operation, **params):
-        """Fingerprint for one Box operation over one input Dataset."""
-        from datasets.fingerprint import Hasher
-        return Hasher.hash({
-            "input": dataset._fingerprint,
-            "operation": operation,
-            "function": Hasher.hash(_predict_map_batch),
-            "box": self.fingerprint,
-            **params,
-        })
 
     @property
     def model_config(self):
-        from ..models.ensemble import Ensemble
-        if isinstance(self.model, Ensemble):
-            return (
-                self.model.to_config()
-                if self.model.has_config
-                else None
-            )
-        return (
-            _json_copy(self._model_config_fallback)
-            if self._model_config_fallback is not None
-            else None
-        )
-
+        return self.model.to_config() if self.model.has_config else None
 
     @property
     def training_data_source(self):
@@ -453,7 +158,6 @@ class Box:
     ) -> "Box":
         """Construct a Box from JSON-compatible configuration."""
         from aspect.data import DataPipeline
-        from ..models.ensemble import Ensemble
 
         if isinstance(config, (str, Path)):
             if os.path.exists(config):
@@ -479,7 +183,6 @@ class Box:
                 f"saved whole-model checkpoint. Received {config=}."
             )
 
-        model_config = _json_copy(model_config)
         model = Ensemble.from_config(model_config)
 
         pipeline_config = config.get("pipeline", {})
@@ -492,6 +195,8 @@ class Box:
             features=config.get("features", []),
             target=config.get("target", []),
             pipeline=pipeline,
+            censor=config.get("censor"),
+            loss=config.get("loss"),
         )
 
     def to_config(
@@ -513,6 +218,8 @@ class Box:
             "pipeline": self.pipeline.to_config(),
             "features": list(self.features),
             "target": list(self.target),
+            "censor": list(self.censor) if self.censor is not None else None,
+            "loss": self.loss.to_dict() if self.loss is not None else None,
         }
         if path is not None:
             path = Path(path)
@@ -538,86 +245,16 @@ class Box:
         Fitted model, pipeline and retained training data are still saved.
         Prediction itself never implicitly writes scorer references.
         """
-        import shutil
-        import tempfile
-        import uuid
+        from .checkpoint import save
 
-        from ..models.adapters import save_model
-        from ..scorers.registry import resolve_scorers
-        from ..scorers.runner import ScoringRunner
-        from ..scorers.persistence import (
-            fitted_state_digest,
-            save_references as persist_references,
-            validate_requested,
+        save(
+            self,
+            path,
+            allow_unsafe,
+            score=score,
+            save_references=save_references,
+            **pipeline_kwargs,
         )
-
-        if not isinstance(save_references, bool):
-            raise TypeError("save_references must be a boolean")
-
-        if save_references:
-            scorers = resolve_scorers(score)
-            with self.references.track() as requested:
-                if scorers:
-                    ScoringRunner(
-                        self, scorers
-                    ).prepare(batch_size=DEFAULT_BATCH_SIZE)
-
-            snapshot = self.references.snapshot()
-            validate_requested(requested, snapshot)
-        else:
-            # Skip scorer resolution, preparation and persistence.
-            # Existing in-memory references remain untouched.
-            snapshot = {}
-
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        staging = Path(tempfile.mkdtemp(
-            prefix=f".{path.name}.staging-", dir=path.parent,
-        ))
-        try:
-            model_metadata = save_model(
-                self.model, staging, allow_unsafe=allow_unsafe,
-            )
-            config = self.to_config()
-            manifest = {
-                "schema_version": self.SCHEMA_VERSION,
-                "config": config,
-                "model": model_metadata,
-                "artefacts": {"training_data": "training-data.as"},
-            }
-            self.pipeline.save(
-                staging / manifest["artefacts"]["training_data"],
-                **pipeline_kwargs,
-            )
-            if save_references:
-                identity = fitted_state_digest(staging, config)
-                refs = persist_references(staging, snapshot, identity)
-                if refs is not None:
-                    manifest["artefacts"]["references"] = refs
-            save_json(manifest, staging / CONFIG_FILENAME)
-
-            # Staging is complete before publishing. Directory overwrite
-            # uses a rollback backup; never publish a partial checkpoint.
-            backup = None
-            if path.exists():
-                if not path.is_dir():
-                    raise FileExistsError(path)
-                backup = path.with_name(
-                    f".{path.name}.backup-{uuid.uuid4().hex}"
-                )
-                path.rename(backup)
-            try:
-                staging.rename(path)
-            except BaseException:
-                if backup is not None and not path.exists():
-                    backup.rename(path)
-                raise
-            if backup is not None:
-                shutil.rmtree(backup)
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging)
-        return None
 
     @classmethod
     def load(
@@ -629,57 +266,15 @@ class Box:
         cache_dir: str | None = None
     ) -> "Box":
         """Restore a Box checkpoint."""
-        from aspect.data import DataPipeline
-        from ..models.adapters import load_model
-        import joblib
+        from .checkpoint import load
 
-        path = Path(path)
-        manifest = load_json(path / CONFIG_FILENAME)
-        schema = manifest["schema_version"]
-        if trusted_types is None:
-            trusted_types = ()
-        if schema == 1:
-            if not allow_unsafe:
-                raise ValueError(
-                    "Legacy schema-1 checkpoints use joblib. "
-                    "Pass allow_unsafe=True only for trusted files."
-                )
-            model = joblib.load(
-                path / manifest["artefacts"]["model_binary"]
-            )
-
-        else:
-            if schema != cls.SCHEMA_VERSION:
-                raise ValueError(
-                    "Unsupported Arvore checkpoint schema: "
-                    f"{manifest['schema_version']}, but package is schema version {cls.SCHEMA_VERSION}"
-                )
-            model = load_model(
-                path,
-                manifest["model"],
-                allow_unsafe=allow_unsafe,
-                trusted_types=trusted_types,
-            )
-        artefacts = manifest["artefacts"]
-        config = manifest["config"]
-        pipeline = DataPipeline.load(
-            path / artefacts["training_data"],
+        return load(
+            cls,
+            path,
+            allow_unsafe,
+            trusted_types=trusted_types,
             cache_dir=cache_dir,
         )
-        box = cls(
-            model=model,
-            pipeline=pipeline,
-            features=config["features"],
-            target=config["target"],
-            model_config=config.get("model"),
-        )
-
-        from ..scorers.persistence import load_references
-        load_references(
-            box, path, artefacts.get("references"), config,
-        )
-
-        return box
 
     def featurize(self, data, *, training: bool = False):
         """Apply the DataPipeline."""
@@ -690,22 +285,24 @@ class Box:
                 f"aspect.DataPipeline. Found {self.pipeline}"
             )
         pipeline = self.pipeline if training else self.pipeline.clone()
-        return self._unwrap(pipeline(data)), pipeline
+        return unwrap(pipeline(data)), pipeline
 
-    @staticmethod
-    def _unwrap(data):
-        from providence import DataResolver
-        return data.data if isinstance(data, DataResolver) else data
+    @property
+    def _target_columns(self) -> tuple[tuple[str, ...], ...]:
+        """Target columns, then any censoring indicator columns."""
+        if self.censor is not None:
+            return (self.target, self.censor)
+        return (self.target,)
 
     def _matrix(
         self, 
         dataset: Dataset, 
         pipeline: DataPipeline
     ):
-        return _matrix(
-            dataset=dataset,
-            pipeline=pipeline,
-            column_groups=(self.features, self.target),
+        return matrix(
+            dataset,
+            pipeline,
+            column_groups=(self.features, *self._target_columns),
         )
 
     def fit(
@@ -720,19 +317,16 @@ class Box:
         **kwargs
     ):
         """Fit the model using raw training and optional validation and test data."""
-        from ..models import get_adapter
         self.references.clear()
         self._fingerprint = None
-        self._model_digest_cache = None
 
         training_data, pipeline = self.featurize(
             data, 
             training=True,
         )
-        X, y = self._matrix(training_data, pipeline)
-        # sklearn regressors generally expect a 1D single target.
-        if y.shape[1] == 1:
-            y = y[:, 0]
+        self._training_identity = training_identity(pipeline)
+        X, *targets = self._matrix(training_data, pipeline)
+        y, censor = targets_and_censor(targets)
         if early_stopping_rounds is not None and not use_validation_for_fit:
             raise ValueError(
                 "early_stopping_rounds requires "
@@ -753,24 +347,20 @@ class Box:
                 training=False,
             )
 
-            X_val, y_val = self._matrix(
+            X_val, *val_targets = self._matrix(
                 validation_data,
                 validation_pipeline,
             )
+            fit_validation = (X_val, *targets_and_censor(val_targets))
 
-            if y_val.shape[1] == 1:
-                y_val = y_val[:, 0]
-
-            fit_validation = (X_val, y_val)
-
-        adapter = get_adapter(self.model)
-        adapter.fit(
-            self.model,
+        self.model.fit(
             X,
             y,
             validation=fit_validation,
-            fit_kwargs=kwargs,
             early_stopping_rounds=early_stopping_rounds,
+            loss=self.loss,
+            censor=censor,
+            **kwargs,
         )
 
         self._validation_score = None
@@ -794,7 +384,7 @@ class Box:
 
             if pipeline is None and self.pipeline.data_out is not None:
                 return (
-                    self._unwrap(self.pipeline.data_out).with_format(None),
+                    unwrap(self.pipeline.data_out).with_format(None),
                     self.pipeline.clone(),
                 )
 
@@ -803,14 +393,15 @@ class Box:
         working_pipeline = (
             self.pipeline.clone()
             if pipeline is None
-            else _resolve_pipeline(pipeline).clone()
+            else resolve_pipeline(pipeline).clone()
         )
 
-        prepared = self._unwrap(working_pipeline(data))
+        prepared = unwrap(working_pipeline(data))
         return prepared.with_format(None), working_pipeline
 
-    def _training_reference(self):
-        """Return training rows, retaining raw columns."""
+    @property
+    def training_data(self):
+        """Training rows after preprocessing, retaining raw columns."""
         if self.pipeline.data_out is not None:
             data = self.pipeline.data_out
 
@@ -822,7 +413,7 @@ class Box:
                 "Reference scoring requires training data "
                 "in the Aspect pipeline"
             )
-        data = self._unwrap(data)
+        data = unwrap(data)
         return (
             data.with_format(None)
             if hasattr(data, "with_format")
@@ -878,20 +469,21 @@ class Box:
             scoring.validate(prepared)
             scoring.prepare(batch_size=batch_size)
 
-        if _is_dataset(prepared):
+        if is_dataset(prepared):
             map_kwargs.setdefault(
                 "new_fingerprint",
-                self._map_fingerprint(
+                operation_fingerprint(
+                    self,
                     prepared,
                     "predict",
-                    pipeline=_pipeline_identity(pipeline),
+                    pipeline=pipeline_identity(pipeline),
                     prediction_column=prediction_column,
                     kwargs=kwargs,
                     scorers=scoring.scorers if scoring else None,
                 ),
             )
         result = prepared.map(
-            _predict_map_batch,
+            predict_map_batch,
             batched=True,
             batch_size=batch_size,
             fn_kwargs={
@@ -925,11 +517,20 @@ class Box:
         batch_size: int = DEFAULT_BATCH_SIZE,
         **map_kwargs,
     ):
-        """Return predicted dataset and evaluation scores."""
+        """Return predicted dataset and evaluation scores.
+
+        Metrics score exact targets only, excluding censored targets and,
+        under a masked ``loss``, missing ones. Training, including early
+        stopping, still uses censored targets through the loss. When any
+        target is excluded, several targets are pooled into one array, so
+        each target is weighted by its number of exact values, and
+        per-target averaging is lost. Raises ``ValueError`` when no exact
+        target remains, as for an entirely censored validation set.
+        """
         if batch_size < 1:
             raise ValueError(f"batch_size must be positive: {batch_size}")
 
-        metric_fns = _resolve_metrics(metrics)
+        metric_fns = resolve_metrics(metrics)
         prepared, working_pipeline = self._pre_predict(
             data=data,
             pipeline=pipeline,
@@ -937,18 +538,19 @@ class Box:
 
         if metric_mask is not None:
             prepared = prepared.filter(metric_mask)
-        if _is_dataset(prepared):
+        if is_dataset(prepared):
             map_kwargs.setdefault(
                 "new_fingerprint",
-                self._map_fingerprint(
+                operation_fingerprint(
+                    self,
                     prepared,
                     "evaluate",
-                    pipeline=_pipeline_identity(working_pipeline),
+                    pipeline=pipeline_identity(working_pipeline),
                     prediction_column=prediction_column,
                 ),
             )
         predicted = prepared.map(
-            _predict_map_batch,
+            predict_map_batch,
             batched=True,
             batch_size=batch_size,
             fn_kwargs={
@@ -966,15 +568,15 @@ class Box:
             for target in self.target
         )
 
-        (y_pred,) = _matrix(
+        (y_pred,) = matrix(
             predicted,
             working_pipeline,
             (prediction_cols,),
         )
-        (y_true,) = _matrix(
+        y_true, *censor = matrix(
             predicted,
             working_pipeline,
-            (self.target,),
+            self._target_columns,
         )
 
         if y_pred.shape != y_true.shape:
@@ -985,7 +587,14 @@ class Box:
 
         if y_true.shape[1] == 1:
             y_pred = y_pred[:, 0]
-            y_true = y_true[:, 0]
+        y_true, censor = targets_and_censor((y_true, *censor))
+
+        y_true, y_pred = exact_observed(
+            y_true,
+            y_pred,
+            censor,
+            masked=self.loss is not None and self.loss.masked,
+        )
 
         scores = {
             name: fn(y_true, y_pred)

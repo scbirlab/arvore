@@ -7,5 +7,6 @@ __version__ = version(app_name)
 
 from .box import Box
 from .models.ensemble import Ensemble
+from .models.losses import Loss
 
-__all__ = ["Box", "Ensemble"]
+__all__ = ["Box", "Ensemble", "Loss"]

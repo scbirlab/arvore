@@ -1,6 +1,7 @@
 from collections.abc import Callable
 
 from carabiner.decorators import decorator_with_params
+import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 DEFAULT_METRICS: tuple[str] = (
@@ -44,7 +45,6 @@ def _normalize_dims(
     
     """
 
-    import numpy as np
     if aggfun is None:
         aggfun = np.mean
 
@@ -105,7 +105,6 @@ def rmsd(y_true, y_pred):
     True
 
     """
-    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true)
     return np.sqrt(np.mean(np.square(y_pred - y_true)))
 
@@ -114,16 +113,14 @@ rmse = register_metric(rmsd, name="rmse")
 
 @register_metric(name="mae")
 def mae(y_true, y_pred):
-    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true)
     return np.mean(np.abs(y_pred - y_true))
 
 
 @register_metric(name="pearson")
 def pearson_r(y_true, y_pred):
-    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true, broadcast=True)
-    return  np.corrcoef(y_pred, y_true)[0, 1]
+    return np.corrcoef(y_pred, y_true)[0, 1]
 
 
 @register_metric(name="spearman")
@@ -148,7 +145,6 @@ def mse(y_true, y_pred):
     0.333
 
     """
-    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true)
     return float(np.mean(np.square(y_pred - y_true)))
 
@@ -163,7 +159,6 @@ def median_absolute_error(y_true, y_pred):
     0.5
 
     """
-    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true)
     return float(np.median(np.abs(y_pred - y_true)))
 
@@ -178,7 +173,6 @@ def max_error(y_true, y_pred):
     7.0
 
     """
-    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true)
     return float(np.max(np.abs(y_pred - y_true)))
 
@@ -195,7 +189,6 @@ def mean_bias(y_true, y_pred):
     1.0
 
     """
-    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true)
     return float(np.mean(y_pred - y_true))
 
@@ -215,7 +208,6 @@ def r2(y_true, y_pred):
     0.0
 
     """
-    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true, broadcast=True)
     ss_tot = np.sum(np.square(y_true - y_true.mean()))
     if ss_tot == 0:
@@ -236,7 +228,6 @@ def explained_variance(y_true, y_pred):
     1.0
 
     """
-    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true, broadcast=True)
     var = np.var(y_true)
     if var == 0:
@@ -259,7 +250,6 @@ def concordance_correlation(y_true, y_pred):
     0.571
 
     """
-    import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true, broadcast=True)
     mean_t, mean_p = y_true.mean(), y_pred.mean()
     cov = np.mean((y_true - mean_t) * (y_pred - mean_p))
@@ -293,7 +283,6 @@ def kendall_tau(y_true, y_pred):
 # binarize predictions at the same cutoff.
 
 def _cutoff(y_true, *, threshold=None, quantile=None):
-    import numpy as np
 
     if (threshold is None) == (quantile is None):
         raise ValueError("Give exactly one of threshold or quantile")
@@ -315,7 +304,6 @@ def _binary(y_true, y_pred, *, threshold, quantile, lower):
 
 
 def _confusion(labels, predicted):
-    import numpy as np
     tp = int(np.sum(labels & predicted))
     fp = int(np.sum(~labels & predicted))
     fn = int(np.sum(labels & ~predicted))
@@ -341,7 +329,6 @@ def _roc_auc(labels, scores):
 
 def _average_precision(labels, scores):
     """Step-wise average precision; tied scores form one threshold."""
-    import numpy as np
     n_pos = int(labels.sum())
     if n_pos == 0:
         return float("nan")
@@ -357,7 +344,6 @@ def _average_precision(labels, scores):
 
 def _enrichment(labels, scores, *, fraction):
     """Hit rate in the top-scored fraction over the overall hit rate."""
-    import numpy as np
     n_pos = int(labels.sum())
     if n_pos == 0:
         return float("nan")
@@ -415,7 +401,6 @@ def binarized_metric(
     1.0
 
     """
-    import numpy as np
 
     ranking = {"roc_auc", "average_precision", "enrichment"}
     confusion = {

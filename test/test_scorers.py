@@ -10,6 +10,8 @@ from arvore.scorers import (
     resolve_scorers,
 )
 
+from helpers import bare_box
+
 
 def make_context(weights=(1.0, 3.0)):
     predictions = np.array([
@@ -103,11 +105,10 @@ def test_duplicate_names():
 
 # Box integration tests
 
-from types import SimpleNamespace
 
 from datasets import Dataset
 
-from arvore import Box, Ensemble
+from arvore import Ensemble
 
 
 class CountingEstimator:
@@ -137,19 +138,14 @@ def make_prediction_box(
         for i, value in enumerate(values)
     }
 
-    box = Box.__new__(Box)
-    box.model = Ensemble(members, weights=weights)
-    box.features = ("x",)
-    box.target = tuple(targets)
-
     data = Dataset.from_dict({
         "x": [0.0, 1.0, 2.0, 3.0, 4.0],
     })
-
-    # Isolate Box.predict from Aspect preprocessing.
-    box._pre_predict = lambda **kwargs: (
-        data,
-        SimpleNamespace(column_transforms={}),
+    box = bare_box(
+        Ensemble(members, weights=weights),
+        ("x",),
+        targets,
+        candidates=data,
     )
 
     return box, members

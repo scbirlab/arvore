@@ -41,19 +41,11 @@ class ScoringRunner:
 
     def validate(self, prepared):
         """Check shared resources and run scorer-specific validation."""
-        from ..box.base import _col_names
+        from ..tabular import column_names
         from ..models.adapters import get_adapter
-        from ..models.ensemble import Ensemble
 
-        columns = set(_col_names(prepared))
-        model = self.box.model
-        is_ensemble = isinstance(model, Ensemble)
-
-        members = (
-            model.members
-            if is_ensemble
-            else {"model": model}
-        )
+        columns = set(column_names(prepared))
+        members = self.box.model.members
 
         supported_outputs = {
             "prediction",
@@ -72,21 +64,21 @@ class ScoringRunner:
         self.needs_leaves = False
 
         for name, scorer in self.scorers.items():
-            req = getattr(
+            requirements = getattr(
                 scorer,
                 "requirements",
                 Requirements(),
             )
 
-            if not isinstance(req, Requirements):
+            if not isinstance(requirements, Requirements):
                 raise TypeError(
                     f"Scorer {name!r} must declare Requirements"
                 )
 
             unsupported = (
-                set(req.outputs) - supported_outputs
+                set(requirements.outputs) - supported_outputs
             ) | (
-                set(req.capabilities) - supported_capabilities
+                set(requirements.capabilities) - supported_capabilities
             )
 
             if unsupported:
@@ -95,7 +87,7 @@ class ScoringRunner:
                     f"resources: {sorted(unsupported)}"
                 )
 
-            missing = set(req.columns) - columns
+            missing = set(requirements.columns) - columns
 
             if missing:
                 raise ValueError(
@@ -104,13 +96,11 @@ class ScoringRunner:
                 )
 
             needs_members = (
-                "member_predictions" in req.outputs
-                or "ensemble_members" in req.capabilities
+                "member_predictions" in requirements.outputs
+                or "ensemble_members" in requirements.capabilities
             )
 
-            if needs_members and (
-                not is_ensemble or len(members) < 2
-            ):
+            if needs_members and len(members) < 2:
                 raise ValueError(
                     f"Scorer {name!r} requires an ensemble "
                     "with at least two members"
@@ -121,8 +111,8 @@ class ScoringRunner:
                 "leaf_indices",
             ):
                 requested = (
-                    capability in req.outputs
-                    or capability in req.capabilities
+                    capability in requirements.outputs
+                    or capability in requirements.capabilities
                 )
 
                 if not requested:

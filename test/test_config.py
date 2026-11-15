@@ -175,3 +175,22 @@ def test_instantiate_estimator():
     assert model.n_estimators == 50
     assert model.max_depth == 8
     assert model.random_state == 42
+
+
+@pytest.mark.parametrize(
+    "alias,class_path",
+    [
+        ("random_forest", "sklearn.ensemble.RandomForestRegressor"),
+        ("extra_trees", "sklearn.ensemble.ExtraTreesRegressor"),
+        ("xgboost", "xgboost.XGBRegressor"),
+        ("lightgbm", "lightgbm.LGBMRegressor"),
+        ("catboost", "catboost.CatBoostRegressor"),
+    ],
+)
+def test_bundled_model_aliases(alias, class_path):
+    from arvore.config.instantiate import model_aliases
+
+    assert alias in model_aliases()
+    config = resolve_experiment_config({"box": {}}, model=alias)
+    assert config["box"]["model"]["class_path"] == class_path
+

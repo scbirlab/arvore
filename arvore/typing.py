@@ -6,11 +6,17 @@ from numpy.typing import ArrayLike
 
 if TYPE_CHECKING:
     from aspect.data import DataPipeline
+    from .models.losses import Loss
 else:
     DataPipeline = Any
+    Loss = Any
 
 PipelineLike: TypeAlias = DataPipeline | Mapping[str, Any] | str | Callable
-Validation: TypeAlias = tuple[ArrayLike, ArrayLike] | None
+Validation: TypeAlias = (
+    tuple[ArrayLike, ArrayLike]
+    | tuple[ArrayLike, ArrayLike, ArrayLike | None]
+    | None
+)
 
 @runtime_checkable
 class Estimator(Protocol):
@@ -30,7 +36,9 @@ class FitAdapter(Protocol):
         *,
         validation: Validation | None = None,
         fit_kwargs: Mapping[str, ...] | None = None,
-        early_stopping_rounds: int | None = None
+        early_stopping_rounds: int | None = None,
+        loss: Loss | None = None,
+        censor: ArrayLike | None = None,
     ) -> None:
         ...
 

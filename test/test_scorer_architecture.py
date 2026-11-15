@@ -1,20 +1,21 @@
 """Regression tests for scorer-owned preparation and execution."""
 
 from copy import deepcopy
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 
-from arvore import Box, Ensemble
+from arvore import Ensemble
 from arvore.scorers import (
     FeatureDistance,
     InverseLeafOccupancy,
     TanimotoDistance,
 )
 from arvore.scorers.base import Requirements
+
+from helpers import bare_box
 
 
 @pytest.fixture
@@ -50,19 +51,12 @@ def example():
         random_state=42,
     ).fit(X_train, y)
 
-    box = Box.__new__(Box)
-    box.model = model
-    box.features = ("x0", "x1", "x2")
-    box.target = ("y",)
-
-    pipeline = SimpleNamespace(
-        data_in=None,
-        data_out=train,
-        column_transforms={},
+    box = bare_box(
+        model,
+        ("x0", "x1", "x2"),
+        reference=train,
+        candidates=test,
     )
-
-    box.pipeline = pipeline
-    box._pre_predict = lambda **kwargs: (test, pipeline)
 
     return box, X_test
 
@@ -127,10 +121,8 @@ def test_custom_scorer_lifecycle(example):
 
 def test_scoring_does_not_change_predictions(example):
     box, X = example
-    box.model = Ensemble({
-        "a": box.model,
-        "b": deepcopy(box.model),
-    })
+    model = box.model.members["model"]
+    box.model = Ensemble({"a": model, "b": deepcopy(model)})
 
     for disaggregate in (False, True):
         baseline = predict(
