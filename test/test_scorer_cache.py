@@ -19,6 +19,8 @@ from arvore.scorers.distances import FeatureReference
 from arvore.scorers.references import ReferenceCache, reference_key
 from arvore.scorers.runner import ScoringRunner
 
+from helpers import bare_box
+
 
 @pytest.fixture
 def fitted_box():
@@ -262,7 +264,6 @@ def test_ensemble_sd_warns_only_if_everything_zero():
 
 def test_default_xgboost_repeat_zero_spread_warning():
     xgboost = pytest.importorskip("xgboost")
-    from types import SimpleNamespace
     from arvore import Ensemble
 
     rng = np.random.default_rng(123)
@@ -273,13 +274,8 @@ def test_default_xgboost_repeat_zero_spread_warning():
         n=3, seed=42,
     )
     model.fit(X, y)
-    box = Box.__new__(Box)
-    box.model = model
-    box.features = ("x0", "x1")
-    box.target = ("y",)
     dataset = Dataset.from_dict({"x0": X[:10, 0], "x1": X[:10, 1]})
-    pipeline = SimpleNamespace(column_transforms={})
-    box._pre_predict = lambda **kwargs: (dataset, pipeline)
+    box = bare_box(model, ("x0", "x1"), candidates=dataset)
     with pytest.warns(RuntimeWarning, match="disagreement is zero"):
         result = box.predict(
             score="ensemble_sd", batch_size=5,

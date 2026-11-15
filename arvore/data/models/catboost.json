@@ -1,0 +1,4 @@
+{
+    "class_path": "catboost.CatBoostRegressor",
+    "init_args": {"random_seed": 42, "verbose": false}
+}

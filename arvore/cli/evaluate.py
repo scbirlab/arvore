@@ -7,9 +7,9 @@ from pathlib import Path
 
 from carabiner.cliutils import clicommand
 
-from ..box import Box
 from ..box.base import DEFAULT_BATCH_SIZE
 from ..config.instantiate import apply_overrides
+from .common import load_box, selected_rows
 
 
 @clicommand(message="Evaluating")
@@ -24,15 +24,7 @@ def _evaluate(args: Namespace) -> None:
     )
     config = apply_overrides(config, args.set)
 
-    box = Box.load(
-        args.input_file,
-        cache_dir=args.cache,
-        trusted_types=(
-            ("sklearn.tree._tree.Tree",)
-            if args.trust_sklearn_trees
-            else ()
-        ),
-    )
+    box = load_box(args)
 
     metrics = (
         args.metrics
@@ -40,19 +32,7 @@ def _evaluate(args: Namespace) -> None:
         else config.get("metrics")
     )
 
-    if args.data is not None:
-        resolved = (
-            DataResolver(args.data)
-            .select_rows(args.start, args.stop)
-        )
-        data = resolved.data
-
-    else:
-        if args.start is not None or args.stop is not None:
-            raise ValueError(
-                "--start and --stop require --data"
-            )
-        data = None
+    data = selected_rows(args)
 
     predicted, scores = box.evaluate(
         data,
@@ -65,13 +45,6 @@ def _evaluate(args: Namespace) -> None:
     )
 
     # Convert NumPy scalar/array results to JSON-compatible values.
-    def serializable(value):
-        if hasattr(value, "tolist"):
-            return value.tolist()
-        raise TypeError(
-            f"Cannot serialize {type(value).__name__}"
-        )
-
     def serializable(value):
         if hasattr(value, "tolist"):
             value = value.tolist()

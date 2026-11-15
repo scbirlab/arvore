@@ -1,0 +1,4 @@
+{
+    "class_path": "lightgbm.LGBMRegressor",
+    "init_args": {"random_state": 42, "verbosity": -1}
+}

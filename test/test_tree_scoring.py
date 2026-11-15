@@ -1,15 +1,15 @@
 """Integration tests for within-forest prediction scoring."""
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 from datasets import Dataset
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 
-from arvore import Box, Ensemble
+from arvore import Ensemble
 from arvore.models.adapters import get_adapter
+
+from helpers import bare_box
 
 
 @pytest.fixture
@@ -28,17 +28,7 @@ def regression_data():
 
 
 def make_box(model, data):
-    box = Box.__new__(Box)
-    box.model = model
-    box.features = ("x0", "x1", "x2", "x3")
-    box.target = ("y",)
-
-    box._pre_predict = lambda **kwargs: (
-        data,
-        SimpleNamespace(column_transforms={}),
-    )
-
-    return box
+    return bare_box(model, ("x0", "x1", "x2", "x3"), candidates=data)
 
 
 def test_single_forest_tree_sd(regression_data):

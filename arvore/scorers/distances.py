@@ -7,9 +7,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .base import ScoreContext
-from .registry import register_scorer
+from .registry import register_reference, register_scorer
 
 
+@register_reference("feature_distance")
 @dataclass(frozen=True)
 class FeatureReference:
     """Exact nearest-neighbour index over transformed training features."""

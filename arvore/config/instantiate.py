@@ -1,6 +1,6 @@
-"""Interpret declarative PyTorch model specifications."""
+"""Interpret declarative model and experiment configurations."""
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from importlib.resources import files
@@ -64,24 +64,6 @@ def _parse_override_value(
         return json.loads(value)
     except json.JSONDecodeError:
         return value
-
-
-def _load_override_file(path: Path) -> Mapping[str, Any]:
-    """Load a flat mapping of dotted overrides from JSON or YAML."""
-    import yaml
-
-    with path.open(encoding="utf-8") as handle:
-        if path.suffix.lower() == ".json":
-            data = json.load(handle)
-        else:
-            data = yaml.safe_load(handle)
-
-    if not isinstance(data, Mapping):
-        raise ValueError(
-            f"Override file {str(path)!r} must contain a mapping."
-        )
-
-    return data
 
 
 def _load_override_file(path: Path) -> Mapping[str, Any]:

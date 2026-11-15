@@ -7,7 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .base import Requirements, ScoreContext
-from .registry import register_scorer
+from .registry import register_reference, register_scorer
 
 
 @dataclass(frozen=True)
@@ -38,10 +38,10 @@ class LeafReference:
 
         scores = np.zeros(n_samples, dtype=float)
 
-        for t, (ids, counts) in enumerate(
+        for tree, (ids, counts) in enumerate(
             zip(self.ids, self.counts)
         ):
-            query = leaves[:, t]
+            query = leaves[:, tree]
             positions = np.searchsorted(ids, query)
 
             valid = positions < len(ids)
@@ -146,12 +146,12 @@ def _decode_leaf(archive, calibrated):
         ):
             raise ValueError("Invalid saved leaf-reference arrays")
         tree_ids = tuple(
-            np.asarray(ids[a:b], dtype=np.int64).copy()
-            for a, b in zip(offsets[:-1], offsets[1:])
+            np.asarray(ids[start:stop], dtype=np.int64).copy()
+            for start, stop in zip(offsets[:-1], offsets[1:])
         )
         tree_counts = tuple(
-            np.asarray(counts[a:b], dtype=np.int64).copy()
-            for a, b in zip(offsets[:-1], offsets[1:])
+            np.asarray(counts[start:stop], dtype=np.int64).copy()
+            for start, stop in zip(offsets[:-1], offsets[1:])
         )
         for one_ids, one_counts in zip(tree_ids, tree_counts):
             if (
@@ -173,6 +173,7 @@ def _decode_leaf(archive, calibrated):
 
 
 
+@register_reference("leaf_counts", "leaf_percentile")
 class LeafReferences(tuple):
     """Immutable collection of per-member leaf references."""
 
@@ -217,9 +218,9 @@ class LeafReferenceBuilder:
                 "Number of trees changed between batches"
             )
 
-        for t, table in enumerate(self._counts):
+        for tree, table in enumerate(self._counts):
             ids, counts = np.unique(
-                leaves[:, t],
+                leaves[:, tree],
                 return_counts=True,
             )
 
@@ -281,14 +282,9 @@ class InverseLeafOccupancy:
     def prepare(self, box, *, batch_size=1024):
         """Prepare shared reference resources once per fitted Box."""
         from ..models.adapters import get_adapter
-        from ..models.ensemble import Ensemble
         from .reference import feature_batches
 
-        models = (
-            tuple(box.model.members.values())
-            if isinstance(box.model, Ensemble)
-            else (box.model,)
-        )
+        models = tuple(box.model.members.values())
         counts_spec = {"type": "leaf_counts", "version": 1}
 
         def build_counts():
@@ -328,20 +324,7 @@ class InverseLeafOccupancy:
         )
 
     def __call__(self, context: ScoreContext) -> NDArray:
-        leaves = context.resources.get("leaf_indices")
         references = context.state
-
-        if leaves is None or references is None:
-            raise ValueError(
-                "inverse_leaf_occupancy requires candidate "
-                "leaf indices and training reference counts"
-            )
-
-        if len(leaves) != len(references):
-            raise ValueError(
-                "Reference and candidate model counts differ"
-            )
-
         member_scores = np.stack(
             [
                 (
@@ -350,28 +333,13 @@ class InverseLeafOccupancy:
                     else reference.inverse_score(query)
                 )
                 for reference, query in zip(
-                    references, leaves
+                    references, context.resources["leaf_indices"]
                 )
             ],
             axis=1,
         )
-
-        weights = context.member_weights
-
-        if weights is None:
-            weights = np.ones(len(references))
-
-        weights = np.asarray(weights, dtype=float)
-
-        if (
-            weights.shape != (len(references),)
-            or not np.all(np.isfinite(weights))
-            or np.any(weights <= 0)
-        ):
-            raise ValueError("Invalid member weights")
-
         return np.average(
             member_scores,
             axis=1,
-            weights=weights,
+            weights=context.member_weights,
         )

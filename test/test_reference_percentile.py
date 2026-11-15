@@ -1,7 +1,5 @@
 """Reference-percentile normalisation tests."""
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 from datasets import Dataset
@@ -10,10 +8,12 @@ from sklearn.ensemble import (
     RandomForestRegressor,
 )
 
-from arvore import Box, Ensemble
+from arvore import Ensemble
 from arvore.models.adapters import get_adapter
 from arvore.scorers import InverseLeafOccupancy
 from arvore.scorers.leaves import LeafReferenceBuilder
+
+from helpers import bare_box
 
 
 def test_percentile_midrank_ties():
@@ -86,19 +86,12 @@ def example():
         ).fit(X_train, y_train),
     }
 
-    box = Box.__new__(Box)
-    box.model = Ensemble(members, weights=(1, 3))
-    box.features = tuple(f"x{i}" for i in range(4))
-    box.target = ("y",)
-
-    pipeline = SimpleNamespace(
-        data_in=None,
-        data_out=train,
-        column_transforms={},
+    box = bare_box(
+        Ensemble(members, weights=(1, 3)),
+        tuple(f"x{i}" for i in range(4)),
+        reference=train,
+        candidates=test,
     )
-
-    box.pipeline = pipeline
-    box._pre_predict = lambda **kwargs: (test, pipeline)
 
     return box, X_train, X_test, members
 

@@ -50,7 +50,7 @@ def test_box_construction_config_roundtrip():
     config = box.to_config()
 
     assert set(config) == {
-        "model", "pipeline", "features", "target"
+        "model", "pipeline", "features", "target", "censor", "loss"
     }
     assert config["model"] == box.model.to_config()
 

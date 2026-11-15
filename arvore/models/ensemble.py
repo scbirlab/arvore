@@ -1,10 +1,11 @@
 """Composable regression ensembles."""
 
-from collections.abc import Callable, Mapping, Iterable
-from copy import deepcopy
+from collections.abc import Mapping, Iterable
 from math import isfinite
 from pathlib import Path
 import os
+
+import numpy as np
 
 from ..typing import Estimator
 
@@ -279,9 +280,12 @@ class Ensemble:
         *,
         validation=None,
         early_stopping_rounds=None,
+        loss=None,
+        censor=None,
         **fit_kwargs,
     ):
         from .adapters import get_adapter
+        from .losses import resolve_loss
 
         get_adapter(self).fit(
             self,
@@ -290,6 +294,8 @@ class Ensemble:
             validation=validation,
             fit_kwargs=fit_kwargs,
             early_stopping_rounds=early_stopping_rounds,
+            loss=resolve_loss(loss),
+            censor=censor,
         )
         return self
 
@@ -298,7 +304,6 @@ class Ensemble:
         X,
         **kwargs
     ):
-        import numpy as np
         from .adapters import get_adapter
 
         predictions = []
@@ -333,8 +338,6 @@ class Ensemble:
         disaggregate: bool = False, 
         **kwargs
     ):
-        import numpy as np
-
         members = self.predict_members(X, **kwargs)
 
         if not disaggregate:

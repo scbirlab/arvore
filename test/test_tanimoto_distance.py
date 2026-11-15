@@ -1,15 +1,16 @@
 """Tests for exact Tanimoto reference distance."""
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 from datasets import Dataset
+from providence import DataResolver
 from sklearn.ensemble import RandomForestRegressor
 
-from arvore import Box, Ensemble
+from arvore import Ensemble
 from arvore.scorers import TanimotoDistance
 from arvore.scorers.tanimoto import TanimotoReference
+
+from helpers import bare_box
 
 
 def brute_force_distance(queries, references):
@@ -124,19 +125,12 @@ def example():
         random_state=42,
     ).fit(X_train, y)
 
-    box = Box.__new__(Box)
-    box.model = model
-    box.features = ("x0", "x1")
-    box.target = ("y",)
-
-    pipeline = SimpleNamespace(
-        data_in=None,
-        data_out=train,
-        column_transforms={},
+    box = bare_box(
+        model,
+        ("x0", "x1"),
+        reference=train,
+        candidates=test,
     )
-
-    box.pipeline = pipeline
-    box._pre_predict = lambda **kwargs: (test, pipeline)
 
     return box, X_test, train_fp, test_fp
 
@@ -174,7 +168,7 @@ def test_disaggregate_preserved(example):
     from copy import deepcopy
 
     box, _, _, _ = example
-    original = box.model
+    original = box.model.members["model"]
 
     box.model = Ensemble({
         "a": original,
@@ -213,8 +207,8 @@ def test_fingerprint_generation_hook(monkeypatch):
 
     class FakeFingerprintPipeline:
         def __call__(self, data):
-            return SimpleNamespace(
-                data=Dataset.from_dict({
+            return DataResolver(
+                Dataset.from_dict({
                     "fingerprint": [
                         fingerprint(s)
                         for s in data["smiles"]

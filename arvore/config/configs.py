@@ -2,7 +2,6 @@ from typing import ClassVar
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, fields, asdict
-import os
 from math import isfinite
 
 

@@ -4,6 +4,8 @@ from collections.abc import Mapping
 
 SCORER_REGISTRY = {}
 
+REFERENCE_TYPES = {}
+
 
 def register_scorer(cls):
     """Register a named scorer class."""
@@ -21,6 +23,16 @@ def register_scorer(cls):
 
     SCORER_REGISTRY[name] = cls
     return cls
+
+
+def register_reference(*kinds):
+    """Register a reference class persisted for specifications of these types."""
+    def register(cls):
+        for kind in kinds:
+            REFERENCE_TYPES[kind] = cls
+        return cls
+
+    return register
 
 
 def scorer_name(scorer):

@@ -172,6 +172,8 @@ Supported backends include:
 
 Additional estimators can be integrated through model adapters.
 
+A Box always holds its model as an `Ensemble`: a single estimator becomes a one-member ensemble named `model`, available as `box.model.members["model"]`.
+
 ### Ensembles
 
 Combine estimators directly through the Python API:
@@ -205,6 +207,45 @@ members = model.predict_members(X_test)
 Arvore also supports ensembles of repeated estimators defined through JSON configurations.
 
 Individual member predictions can be inspected alongside aggregate predictions, including through the CLI's `--disaggregate` option.
+
+### Censored and missing targets
+
+`censor` marks censored targets and a `loss` sets how they, and missing targets, are trained on. Both are part of the Box configuration, so they are checkpointed and reapplied on retraining:
+
+```json
+{
+    "model": {"class_path": "xgboost.XGBRegressor"},
+    "features": ["smiles"],
+    "target": "pIC50",
+    "censor": "qualifier",
+    "loss": {"masked": true}
+}
+```
+
+`censor` names numeric columns, one per target: negative for left-censored values (the true value is at most the target), positive for right-censored (at least the target) and zero for exact values. With `masked`, missing targets are ignored. Rows missing every target are dropped together with any `sample_weight`; other row-aligned fit arguments are not filtered.
+
+| Backend | Masked, one target | Masked, several targets | Censored or custom `loss.name` |
+| --- | --- | --- | --- |
+| scikit-learn | missing rows dropped | rows dropped only when all targets missing; warns if any remain | unsupported |
+| XGBoost | missing rows dropped | custom objective | custom objective |
+| LightGBM | missing rows dropped | unsupported (single target only) | custom objective |
+| CatBoost | missing rows dropped | `MultiRMSEWithMissingValues` | unsupported |
+
+Otherwise the estimator's own objective is used. Custom objectives train on, and early-stop on, `loss.name`, by default `"squared_error"`: half the squared distance from the prediction to the interval allowed by the target, which has no nuisance parameters. Censored targets use this default unless a `loss` is given. Any importable function `f(prediction, lower, upper) -> (loss, gradient, hessian)` can be given instead, as its import path or the function itself; for boosting its Hessian may be a positive surrogate, such as one for absolute error, whose true Hessian is zero almost everywhere:
+
+```python
+from arvore import Box, Loss
+
+box = Box(
+    model, 
+    features="x", 
+    target="y", 
+    censor="qualifier",
+    loss=Loss(name="my_package.interval_huber", masked=True),
+)
+```
+
+`Box.evaluate`, including the validation scores from `Box.fit`, computes its metrics on exact targets only: censored targets, and under a masked `loss` missing targets, are excluded. Training and early stopping still use censored targets through the loss. When targets are excluded, several targets are pooled into one array, weighting each by its number of exact values; evaluating an entirely censored dataset raises `ValueError`.
 
 ## Prediction scoring
 
@@ -361,6 +402,8 @@ Arvore also supports batched predictions, making it suitable for evaluating larg
 
 Predictions and evaluations run through Hugging Face `Dataset.map` and are fingerprinted by the input data, the requested scorers and a content fingerprint of the fitted `Box` (`box.fingerprint`). For file-backed datasets, repeating a prediction with the same model, data and scorers loads the cached result, including after the checkpoint is reloaded.
 
+`box.fingerprint` identifies the training data by its Providence provenance, never by reading the data: a remote source pinned to a commit, or the checksum of a local source (including in-memory data Providence checksums when loading it), plus any selected rows. Other in-memory datasets are identified by their Datasets fingerprint, and data with no identity at all gets a unique one, so it never shares an identity with other data. The identity is saved with the checkpoint and trusted on loading, because Providence verifies the restored training data against its recorded checksum and refuses to load data that no longer matches. The checkpoint manifest is not signed, so this trust extends only as far as trust in the checkpoint.
+
 ## Evaluation and reproducibility
 
 Evaluate models against held-out data using standard regression metrics:
@@ -415,6 +458,8 @@ arvore train train.csv \
 ```
 
 This makes the same experiment definition reusable across model hyperparameters, datasets and automated workflows.
+
+`--model` swaps in a bundled model configuration: `random_forest`, `extra_trees`, `xgboost`, `lightgbm` or `catboost`, each with its library's default hyperparameters and a fixed random seed.
 
 ## Extending Arvore
 
@@ -552,15 +597,15 @@ Here, `builder` is a callable that constructs the resource when it has not alrea
 
 Arvore hashes the canonical resource specification to obtain a deterministic cache key. Equivalent requests reuse the same prepared resource, including across scorer instances.
 
-Reference types supporting Arvore's checkpoint persistence can be saved and restored alongside the fitted model.
+To save and restore a reference with the fitted model, register its class for the specification's `type` with `arvore.scorers.register_reference`. The class implements `state_dict()`, returning a mapping of numeric arrays, and `from_state_dict(state, spec)`, and its specification sets `"version": 1`.
 
 This enables integration with external nearest-neighbour libraries, model-specific uncertainty implementations, density estimators or calibration methods without embedding their algorithms in `Box`.
 
 ### Model adapters
 
-Custom estimators can be supported through Arvore's adapter registry.
+Adapters, one module per model family in `arvore.models.adapters`, handle estimator-specific fitting (including Box losses), prediction, model capabilities and persistence. This allows scorers to request capabilities such as individual-tree predictions without depending directly on XGBoost, LightGBM, CatBoost or scikit-learn internals.
 
-Adapters handle estimator-specific fitting, prediction, model capabilities and persistence. This allows scorers to request capabilities such as individual-tree predictions without depending directly on XGBoost, LightGBM, CatBoost or scikit-learn internals.
+To support another family, subclass `SklearnAdapter`, list the estimator classes it handles as import paths in `estimator_classes`, implement `_fit`, `save` and `load`, and register it with `register_adapter`. `SklearnAdapter.fit` already handles validation sets, early-stopping checks, masked rows and censored targets before calling `_fit`.
 
 ## Development
 
