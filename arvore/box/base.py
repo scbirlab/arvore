@@ -19,6 +19,7 @@ else:
 from ..config.instantiate import instantiate_object
 from ..metrics import DEFAULT_METRICS, METRICS_REGISTRY
 from ..models.ensemble import Ensemble
+from ..models.losses import Loss, resolve_loss
 from ..typing import Estimator, DataLike, PipelineLike
 
 CONFIG_FILENAME = "config.json"
@@ -159,6 +160,13 @@ def _data_len(dataset: Dataset | IterableDataset | Mapping) -> int:
         raise ValueError(f"Can't get number of rows for {type(dataset)}: {dataset}")
 
 
+def _targets(arrays):
+    """Return target and optional censoring indicators, 1D for a single target."""
+    # sklearn regressors generally expect a 1D single target.
+    y, *censor = (a[:, 0] if a.shape[1] == 1 else a for a in arrays)
+    return y, (censor[0] if censor else None)
+
+
 def get_transformed_column(
     column: str, 
     dataset: Dataset | IterableDataset | Mapping, 
@@ -284,6 +292,15 @@ class Box:
     no generic reconstruction recipe. Such Boxes remain supported and fall
     back to whole-model serialization.
 
+    ``censor`` names numeric columns, one per target, of censoring
+    indicators: negative for left-censored values (the true value is at
+    most the target), positive for right-censored (at least the target)
+    and zero for exact values. Censored targets train on ``loss``, by
+    default :class:`arvore.Loss`. A ``loss`` (name, mapping of
+    :class:`arvore.Loss` fields, importable function or
+    :class:`arvore.Loss`) can also mask missing targets. Both are
+    checkpointed with the Box.
+
     """
 
     SCHEMA_VERSION: int = 2
@@ -293,6 +310,8 @@ class Box:
         model: Estimator,
         features: str | Iterable[str],
         target: str | Iterable[str],
+        censor: str | Iterable[str] | None = None,
+        loss: str | Mapping[str, ...] | Callable | Loss | None = None,
         pipeline: PipelineLike | os.PathLike | str | None = None,
         # TODO: Make type hints more specific
         model_config: Mapping[str, ...] | None = None,
@@ -302,7 +321,16 @@ class Box:
             features = (features,)
         if isinstance(target, str):
             target = (target,)
+        if isinstance(censor, str):
+            censor = (censor,)
         features, target = tuple(features), tuple(target)
+        if censor is not None:
+            censor = tuple(censor)
+            if len(censor) != len(target):
+                raise ValueError(
+                    f"censor must name one column per target, but {censor} "
+                    f"does not match {target}"
+                )
         if len(features) == 0:
             raise ValueError("features must be a nonempty list of column names")
         if len(target) == 0:
@@ -326,6 +354,8 @@ class Box:
         self.model = model
         self.features = features
         self.target = target
+        self.censor = censor
+        self.loss = resolve_loss(loss)
 
         from ..models.ensemble import Ensemble
 
@@ -492,6 +522,8 @@ class Box:
             features=config.get("features", []),
             target=config.get("target", []),
             pipeline=pipeline,
+            censor=config.get("censor"),
+            loss=config.get("loss"),
         )
 
     def to_config(
@@ -513,6 +545,8 @@ class Box:
             "pipeline": self.pipeline.to_config(),
             "features": list(self.features),
             "target": list(self.target),
+            "censor": list(self.censor) if self.censor is not None else None,
+            "loss": self.loss.to_dict() if self.loss is not None else None,
         }
         if path is not None:
             path = Path(path)
@@ -672,6 +706,8 @@ class Box:
             features=config["features"],
             target=config["target"],
             model_config=config.get("model"),
+            censor=config.get("censor"),
+            loss=config.get("loss"),
         )
 
         from ..scorers.persistence import load_references
@@ -702,10 +738,13 @@ class Box:
         dataset: Dataset, 
         pipeline: DataPipeline
     ):
+        column_groups = (self.features, self.target)
+        if self.censor is not None:
+            column_groups += (self.censor,)
         return _matrix(
             dataset=dataset,
             pipeline=pipeline,
-            column_groups=(self.features, self.target),
+            column_groups=column_groups,
         )
 
     def fit(
@@ -729,10 +768,8 @@ class Box:
             data, 
             training=True,
         )
-        X, y = self._matrix(training_data, pipeline)
-        # sklearn regressors generally expect a 1D single target.
-        if y.shape[1] == 1:
-            y = y[:, 0]
+        X, *targets = self._matrix(training_data, pipeline)
+        y, censor = _targets(targets)
         if early_stopping_rounds is not None and not use_validation_for_fit:
             raise ValueError(
                 "early_stopping_rounds requires "
@@ -753,15 +790,11 @@ class Box:
                 training=False,
             )
 
-            X_val, y_val = self._matrix(
+            X_val, *val_targets = self._matrix(
                 validation_data,
                 validation_pipeline,
             )
-
-            if y_val.shape[1] == 1:
-                y_val = y_val[:, 0]
-
-            fit_validation = (X_val, y_val)
+            fit_validation = (X_val, *_targets(val_targets))
 
         adapter = get_adapter(self.model)
         adapter.fit(
@@ -771,6 +804,8 @@ class Box:
             validation=fit_validation,
             fit_kwargs=kwargs,
             early_stopping_rounds=early_stopping_rounds,
+            loss=self.loss,
+            censor=censor,
         )
 
         self._validation_score = None

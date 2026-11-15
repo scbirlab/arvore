@@ -279,9 +279,12 @@ class Ensemble:
         *,
         validation=None,
         early_stopping_rounds=None,
+        loss=None,
+        censor=None,
         **fit_kwargs,
     ):
         from .adapters import get_adapter
+        from .losses import resolve_loss
 
         get_adapter(self).fit(
             self,
@@ -290,6 +293,8 @@ class Ensemble:
             validation=validation,
             fit_kwargs=fit_kwargs,
             early_stopping_rounds=early_stopping_rounds,
+            loss=resolve_loss(loss),
+            censor=censor,
         )
         return self
 

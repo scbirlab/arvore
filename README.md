@@ -206,6 +206,43 @@ Arvore also supports ensembles of repeated estimators defined through JSON confi
 
 Individual member predictions can be inspected alongside aggregate predictions, including through the CLI's `--disaggregate` option.
 
+### Censored and missing targets
+
+`censor` marks censored targets and a `loss` sets how they, and missing targets, are trained on. Both are part of the Box configuration, so they are checkpointed and reapplied on retraining:
+
+```json
+{
+    "model": {"class_path": "xgboost.XGBRegressor"},
+    "features": ["smiles"],
+    "target": "pIC50",
+    "censor": "qualifier",
+    "loss": {"masked": true}
+}
+```
+
+`censor` names numeric columns, one per target: negative for left-censored values (the true value is at most the target), positive for right-censored (at least the target) and zero for exact values. With `masked`, missing targets are ignored. Rows missing every target are dropped together with any `sample_weight`; other row-aligned fit arguments are not filtered.
+
+| Backend | Masked, one target | Masked, several targets | Censored or custom `loss.name` |
+| --- | --- | --- | --- |
+| scikit-learn | missing rows dropped | rows dropped only when all targets missing; warns if any remain | unsupported |
+| XGBoost | missing rows dropped | custom objective | custom objective |
+| LightGBM | missing rows dropped | unsupported (single target only) | custom objective |
+| CatBoost | missing rows dropped | `MultiRMSEWithMissingValues` | unsupported |
+
+Otherwise the estimator's own objective is used. Custom objectives train on, and early-stop on, `loss.name`, by default `"squared_error"`: half the squared distance from the prediction to the interval allowed by the target, which has no nuisance parameters. Censored targets use this default unless a `loss` is given. Any importable function `f(prediction, lower, upper) -> (loss, gradient, hessian)` can be given instead, as its import path or the function itself; for boosting its Hessian may be a positive surrogate, such as one for absolute error, whose true Hessian is zero almost everywhere:
+
+```python
+from arvore import Box, Loss
+
+box = Box(
+    model, 
+    features="x", 
+    target="y", 
+    censor="qualifier",
+    loss=Loss(name="my_package.interval_huber", masked=True),
+)
+```
+
 ## Prediction scoring
 
 Arvore supports composable prediction diagnostics through the `score` argument of `Box.predict()`.
@@ -560,7 +597,7 @@ This enables integration with external nearest-neighbour libraries, model-specif
 
 Custom estimators can be supported through Arvore's adapter registry.
 
-Adapters handle estimator-specific fitting, prediction, model capabilities and persistence. This allows scorers to request capabilities such as individual-tree predictions without depending directly on XGBoost, LightGBM, CatBoost or scikit-learn internals.
+Adapters, one module per model family in `arvore.models.adapters`, handle estimator-specific fitting (including Box losses), prediction, model capabilities and persistence. This allows scorers to request capabilities such as individual-tree predictions without depending directly on XGBoost, LightGBM, CatBoost or scikit-learn internals.
 
 ## Development
 

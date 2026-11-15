@@ -50,6 +50,17 @@ def test_single_registry():
         assert adapter.filename.startswith("model.")
 
 
+def test_one_module_per_family():
+    from arvore import models
+    from arvore.models.ensemble import Ensemble
+
+    assert models.ensemble.Ensemble is Ensemble
+
+    for name, adapter in ADAPTERS.items():
+        family = "sklearn" if name == "skops" else name
+        assert type(adapter).__module__ == f"arvore.models.adapters.{family}"
+
+
 def test_sklearn_dispatch(fitted_rf):
     pytest.importorskip("skops.io")
     model, _ = fitted_rf
