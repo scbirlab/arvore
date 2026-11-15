@@ -2,7 +2,6 @@
 
 from carabiner.mpl import add_legend, grid, figsaver
 import pandas as pd
-import numpy as np
 
 
 def _plot_history(

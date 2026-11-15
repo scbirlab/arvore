@@ -10,7 +10,6 @@ from ...typing import Estimator, Validation
 from .base import (
     _class_path,
     _drop_masked,
-    _kwargs,
     _normalize_leaf_indices,
     _require_native_loss,
     register_adapter,
@@ -32,12 +31,10 @@ def _array_digest(array) -> str:
 
 
 def _skops_digest(raw: bytes) -> str:
-    """Content identity of a skops archive, stable across save and load.
-
-    skops archives aren't byte-reproducible: entries are named by id(),
-    timestamped, and tree arrays carry uninitialized struct padding.
-    Hash the schema without ids, and arrays field by field.
-    """
+    """Content identity of a skops archive, stable across save and load."""
+    # skops archives aren't byte-reproducible: entries are named by id(),
+    # timestamped, and tree arrays carry uninitialized struct padding.
+    # Hash the schema without ids, and arrays field by field.
     import io
     import json
     import zipfile
@@ -146,7 +143,7 @@ class SklearnAdapter:
                 "early_stopping_rounds"
             )
         _require_native_loss(estimator, loss, censor)
-        kw = _kwargs(fit_kwargs)
+        kw = dict(fit_kwargs or {})
         X, y, _ = _drop_masked(loss, X, y, fit_kwargs=kw)
         if loss is not None and loss.requires_objective(y):
             import warnings

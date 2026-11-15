@@ -123,7 +123,7 @@ def mae(y_true, y_pred):
 def pearson_r(y_true, y_pred):
     import numpy as np
     y_pred, y_true = _normalize_dims(y_pred, y_true, broadcast=True)
-    return  np.corrcoef(y_pred, y_true)[0, 1]
+    return np.corrcoef(y_pred, y_true)[0, 1]
 
 
 @register_metric(name="spearman")

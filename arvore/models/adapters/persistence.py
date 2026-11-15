@@ -18,7 +18,6 @@ def save_model(
     skip_save: bool = False,
     **kwargs
 ):
-
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
 
@@ -27,20 +26,20 @@ def save_model(
         allow_unsafe=kwargs.get("allow_unsafe", False),
     )
     path = path / adapter.filename
-    if not skip_save:
-        adapter.save(model, path,  **kwargs)
     if skip_save:
         trainable = True
-    elif adapter.name == "ensemble":
-        from providence.io import load_json
-
-        manifest = load_json(path)
-        trainable = all(
-            entry["metadata"]["trainable"]
-            for entry in manifest["members"]
-        )
     else:
-        trainable = adapter.restored_trainable
+        adapter.save(model, path, **kwargs)
+        if adapter.name == "ensemble":
+            from providence.io import load_json
+
+            manifest = load_json(path)
+            trainable = all(
+                entry["metadata"]["trainable"]
+                for entry in manifest["members"]
+            )
+        else:
+            trainable = adapter.restored_trainable
 
     return ModelArtifact(
         adapter=adapter.name,
@@ -107,11 +106,9 @@ def load_model(
 
     adapter = get_adapter_by_name(name)
     filename = artifact.filename
+    # ModelArtifact sets filename and sha256 together, or neither.
     if filename is None:
-        if artifact.sha256 is None:
-            raise ValueError(f"Cannot load from checkpoint where mdoel svaing was skipped")
-        else:
-            raise FileNotFoundError(f"Checksum exists but filename is missing")
+        raise ValueError("Cannot load a model from a checkpoint saved with skip_save=True")
     if filename != adapter.filename:
         raise ValueError(
             f"Unexpected filename for adapter {name}: {filename}"

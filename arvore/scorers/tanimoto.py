@@ -132,7 +132,7 @@ class TanimotoReference:
         if query_chunk < 1 or reference_chunk < 1:
             raise ValueError("Chunk sizes must be positive")
 
-        queries, q_counts, _ = _encode_fingerprints(
+        queries, query_counts, _ = _encode_fingerprints(
             fingerprints, n_bits=self.n_bits
         )
         distances = np.empty(len(queries), dtype=np.float64)
@@ -146,9 +146,9 @@ class TanimotoReference:
         )
 
         for start in range(0, len(queries), query_chunk):
-            q = queries[start:start + query_chunk]
-            qc = q_counts[start:start + query_chunk]
-            width = len(q)
+            query = queries[start:start + query_chunk]
+            query_popcount = query_counts[start:start + query_chunk]
+            width = len(query)
 
             best_sim = np.full(
                 (width, n_neighbors), -np.inf, dtype=np.float64
@@ -160,14 +160,14 @@ class TanimotoReference:
             )
 
             for offset in range(0, len(self.packed), reference_chunk):
-                r = self.packed[offset:offset + reference_chunk]
-                rc = self.counts[offset:offset + reference_chunk]
+                reference = self.packed[offset:offset + reference_chunk]
+                reference_popcount = self.counts[offset:offset + reference_chunk]
 
                 intersection = np.bitwise_count(
-                    np.bitwise_and(q[:, None, :], r[None, :, :])
+                    np.bitwise_and(query[:, None, :], reference[None, :, :])
                 ).sum(axis=2, dtype=np.int32)
 
-                union = qc[:, None] + rc[None, :] - intersection
+                union = query_popcount[:, None] + reference_popcount[None, :] - intersection
                 similarity = np.divide(
                     intersection,
                     union,
@@ -176,7 +176,7 @@ class TanimotoReference:
                 )
 
                 index = np.broadcast_to(
-                    np.arange(offset, offset + len(r), dtype=np.int64),
+                    np.arange(offset, offset + len(reference), dtype=np.int64),
                     similarity.shape,
                 )
 

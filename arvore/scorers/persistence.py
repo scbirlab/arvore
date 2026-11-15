@@ -26,11 +26,9 @@ def _sha256(path):
 
 
 def fitted_state_digest(checkpoint, config):
-    """Hash saved model, fitted preprocessing and Box config.
-
-    Exclude only the reference archive and the top-level manifest to avoid a
-    circular dependency. Hash symbolic link targets without following them.
-    """
+    """Hash saved model, fitted preprocessing and Box config."""
+    # Exclude only the reference archive and the top-level manifest, which
+    # depend on this digest. Hash symbolic link targets without following them.
     checkpoint = Path(checkpoint)
     digest = sha256(json.dumps(
         config, sort_keys=True, separators=(",", ":"), allow_nan=False,

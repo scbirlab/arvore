@@ -38,10 +38,10 @@ class LeafReference:
 
         scores = np.zeros(n_samples, dtype=float)
 
-        for t, (ids, counts) in enumerate(
+        for tree, (ids, counts) in enumerate(
             zip(self.ids, self.counts)
         ):
-            query = leaves[:, t]
+            query = leaves[:, tree]
             positions = np.searchsorted(ids, query)
 
             valid = positions < len(ids)
@@ -146,12 +146,12 @@ def _decode_leaf(archive, calibrated):
         ):
             raise ValueError("Invalid saved leaf-reference arrays")
         tree_ids = tuple(
-            np.asarray(ids[a:b], dtype=np.int64).copy()
-            for a, b in zip(offsets[:-1], offsets[1:])
+            np.asarray(ids[start:stop], dtype=np.int64).copy()
+            for start, stop in zip(offsets[:-1], offsets[1:])
         )
         tree_counts = tuple(
-            np.asarray(counts[a:b], dtype=np.int64).copy()
-            for a, b in zip(offsets[:-1], offsets[1:])
+            np.asarray(counts[start:stop], dtype=np.int64).copy()
+            for start, stop in zip(offsets[:-1], offsets[1:])
         )
         for one_ids, one_counts in zip(tree_ids, tree_counts):
             if (
@@ -217,9 +217,9 @@ class LeafReferenceBuilder:
                 "Number of trees changed between batches"
             )
 
-        for t, table in enumerate(self._counts):
+        for tree, table in enumerate(self._counts):
             ids, counts = np.unique(
-                leaves[:, t],
+                leaves[:, tree],
                 return_counts=True,
             )
 

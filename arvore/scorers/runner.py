@@ -72,21 +72,21 @@ class ScoringRunner:
         self.needs_leaves = False
 
         for name, scorer in self.scorers.items():
-            req = getattr(
+            requirements = getattr(
                 scorer,
                 "requirements",
                 Requirements(),
             )
 
-            if not isinstance(req, Requirements):
+            if not isinstance(requirements, Requirements):
                 raise TypeError(
                     f"Scorer {name!r} must declare Requirements"
                 )
 
             unsupported = (
-                set(req.outputs) - supported_outputs
+                set(requirements.outputs) - supported_outputs
             ) | (
-                set(req.capabilities) - supported_capabilities
+                set(requirements.capabilities) - supported_capabilities
             )
 
             if unsupported:
@@ -95,7 +95,7 @@ class ScoringRunner:
                     f"resources: {sorted(unsupported)}"
                 )
 
-            missing = set(req.columns) - columns
+            missing = set(requirements.columns) - columns
 
             if missing:
                 raise ValueError(
@@ -104,8 +104,8 @@ class ScoringRunner:
                 )
 
             needs_members = (
-                "member_predictions" in req.outputs
-                or "ensemble_members" in req.capabilities
+                "member_predictions" in requirements.outputs
+                or "ensemble_members" in requirements.capabilities
             )
 
             if needs_members and (
@@ -121,8 +121,8 @@ class ScoringRunner:
                 "leaf_indices",
             ):
                 requested = (
-                    capability in req.outputs
-                    or capability in req.capabilities
+                    capability in requirements.outputs
+                    or capability in requirements.capabilities
                 )
 
                 if not requested:

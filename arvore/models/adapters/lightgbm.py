@@ -8,7 +8,6 @@ from ..losses import Loss
 from ...typing import Estimator, Validation
 from .base import (
     _drop_masked,
-    _kwargs,
     _normalize_leaf_indices,
     _require_validation,
     _temporary_params,
@@ -31,6 +30,10 @@ class LightGBMPredictor:
             "Native LightGBM checkpoints are inference-only. "
             "Create a new estimator to retrain."
         )
+
+
+def _booster(model):
+    return model.booster if isinstance(model, LightGBMPredictor) else model.booster_
 
 
 def _lightgbm_has_eval_xy(estimator):
@@ -64,14 +67,8 @@ class LightGBMAdapter(SklearnAdapter):
         return frozenset({"leaf_indices"})
 
     def leaf_indices(self, estimator, X):
-        booster = (
-            estimator.booster
-            if isinstance(estimator, LightGBMPredictor)
-            else estimator.booster_
-        )
-
         return _normalize_leaf_indices(
-            booster.predict(
+            _booster(estimator).predict(
                 X,
                 pred_leaf=True,
                 num_iteration=None,
@@ -97,12 +94,7 @@ class LightGBMAdapter(SklearnAdapter):
     def save(self, model, path, **kwargs):
         # Explicitly preserve the trained ensemble, including
         # its best-iteration prediction behaviour.
-        booster = (
-            model.booster
-            if isinstance(model, LightGBMPredictor)
-            else model.booster_
-        )
-        booster.save_model(str(path))
+        _booster(model).save_model(str(path))
 
     def load(self, path, *, trusted=(), **kwargs):
         import lightgbm as lgb
@@ -133,7 +125,7 @@ class LightGBMAdapter(SklearnAdapter):
         if censor is not None and loss is None:
             loss = Loss()
         _require_validation(validation, early_stopping_rounds)
-        kw = _kwargs(fit_kwargs)
+        kw = dict(fit_kwargs or {})
 
         if {"eval_set", "eval_X", "eval_y"} & kw.keys():
             raise ValueError(

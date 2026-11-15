@@ -1,6 +1,5 @@
 """Adapter registry and helpers shared by model families."""
 
-from collections.abc import Mapping
 from contextlib import contextmanager
 
 from carabiner.decorators import decorator_with_params
@@ -38,10 +37,6 @@ def register_adapter(
     ADAPTERS[name] = fn() if isinstance(fn, type) else fn
     PACKAGES[name] = package or name
     return fn
-
-
-def _kwargs(fit_kwargs: Mapping[str, ...] | None):
-    return dict(fit_kwargs or {})
 
 
 def _require_validation(

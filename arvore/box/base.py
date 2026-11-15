@@ -16,7 +16,6 @@ else:
     DataPipeline = Any
     Dataset, IterableDataset = Any, Any
 
-from ..config.instantiate import instantiate_object
 from ..metrics import DEFAULT_METRICS, METRICS_REGISTRY
 from ..models.ensemble import Ensemble
 from ..models.losses import Loss, resolve_loss
@@ -213,12 +212,13 @@ def _matrix(
     import numpy as np
     if len(dataset) == 0:
         raise ValueError(f"No rows in dataset: {dataset}")
+    n_rows = _data_len(dataset)
     blocks = ()
-    for col_group in column_groups:
-        group_blocks = []
-        for feature in col_group:
+    for columns in column_groups:
+        arrays = []
+        for column in columns:
             column_name = get_transformed_column(
-                feature, 
+                column, 
                 dataset, 
                 pipeline,
             )
@@ -227,14 +227,13 @@ def _matrix(
                 values = np.asarray(values)
                 if values.dtype == object:
                     values = np.stack(list(values))
-                values = values.reshape(_data_len(dataset), -1)
+                values = values.reshape(n_rows, -1)
             except (TypeError, ValueError) as error:
-                raise ValueError(f"Feature {feature!r} is not a regular array: {dataset[column_name]}") from error
+                raise ValueError(f"Column {column!r} is not a regular array: {dataset[column_name]}") from error
             if not np.issubdtype(values.dtype, np.number):
-                raise TypeError(f"Feature {feature!r} must be numeric, got {values.dtype}")
-            group_blocks.append(values)
-        group_blocks = np.concatenate(group_blocks, axis=1)
-        blocks += (group_blocks,)
+                raise TypeError(f"Column {column!r} must be numeric, got {values.dtype}")
+            arrays.append(values)
+        blocks += (np.concatenate(arrays, axis=1),)
     return blocks
     
 
@@ -353,7 +352,7 @@ class Box:
         if len(features) == 0:
             raise ValueError("features must be a nonempty list of column names")
         if len(target) == 0:
-            raise ValueError("features must be a nonempty list of column names")
+            raise ValueError("target must be a nonempty list of column names")
         if not all(isinstance(f, str) and f for f in features):
             raise ValueError("features must contain nonempty strings")
         if not all(isinstance(f, str) and f for f in target):
@@ -363,8 +362,6 @@ class Box:
             and callable(getattr(model, "predict", None))
         ):
             raise TypeError("model must implement .fit(X, y) and .predict(X) methods")
-        
-        from providence import DataResolver
 
         self.pipeline = _resolve_pipeline(
             pipeline,
@@ -375,9 +372,6 @@ class Box:
         self.target = target
         self.censor = censor
         self.loss = resolve_loss(loss)
-
-        from ..models.ensemble import Ensemble
-
         self._model_config_fallback = None
 
         if isinstance(self.model, Ensemble):
@@ -467,7 +461,6 @@ class Box:
 
     @property
     def model_config(self):
-        from ..models.ensemble import Ensemble
         if isinstance(self.model, Ensemble):
             return (
                 self.model.to_config()
@@ -502,7 +495,6 @@ class Box:
     ) -> "Box":
         """Construct a Box from JSON-compatible configuration."""
         from aspect.data import DataPipeline
-        from ..models.ensemble import Ensemble
 
         if isinstance(config, (str, Path)):
             if os.path.exists(config):

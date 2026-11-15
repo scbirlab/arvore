@@ -67,13 +67,6 @@ def _evaluate(args: Namespace) -> None:
     # Convert NumPy scalar/array results to JSON-compatible values.
     def serializable(value):
         if hasattr(value, "tolist"):
-            return value.tolist()
-        raise TypeError(
-            f"Cannot serialize {type(value).__name__}"
-        )
-
-    def serializable(value):
-        if hasattr(value, "tolist"):
             value = value.tolist()
         if isinstance(value, float) and not isfinite(value):
             return None

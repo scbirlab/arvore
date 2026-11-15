@@ -1,7 +1,6 @@
 """Composable regression ensembles."""
 
-from collections.abc import Callable, Mapping, Iterable
-from copy import deepcopy
+from collections.abc import Mapping, Iterable
 from math import isfinite
 from pathlib import Path
 import os

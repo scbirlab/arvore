@@ -8,7 +8,6 @@ from ..losses import Loss
 from ...typing import Estimator, Validation
 from .base import (
     _drop_masked,
-    _kwargs,
     _normalize_leaf_indices,
     _require_native_loss,
     _require_validation,
@@ -63,7 +62,7 @@ class CatBoostAdapter(SklearnAdapter):
         """Fit, training partially missing targets on ``MultiRMSEWithMissingValues``."""
         _require_validation(validation, early_stopping_rounds)
         _require_native_loss(estimator, loss, censor)
-        kw = _kwargs(fit_kwargs)
+        kw = dict(fit_kwargs or {})
 
         if "eval_set" in kw:
             raise ValueError("Use validation= instead of fit.eval_set")
