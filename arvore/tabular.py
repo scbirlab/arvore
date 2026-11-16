@@ -67,47 +67,66 @@ def column_names(data: Dataset | IterableDataset | Mapping) -> list[str]:
     raise ValueError(f"Can't get column names for {type(data)}: {data}")
 
 
-def get_transformed_column(
-    column: str,
-    data: Dataset | IterableDataset | Mapping,
-    pipeline: DataPipeline
-) -> str:
-    """Name of the column holding ``column`` after the pipeline's transforms."""
-    transforms = pipeline.column_transforms.get(column, ())
-    available = column_names(data)
-    if len(transforms) > 0:
-        generated_column = transforms[-1].output_column
-        if generated_column in available:
-            return generated_column
-    if column in available:
-        return column
-    raise KeyError(
-        f"Column or Aspect transform {column} unavailable. "
-        f"Available columns: {available}"
-    )
+def _as_numeric(values: np.ndarray) -> np.ndarray:
+    """Booleans as 0/1, and missing values in bool or numeric columns as NaN.
+
+    Other dtypes are returned unchanged.
+
+    Examples
+    ========
+    >>> _as_numeric(np.array([True, False]))
+    array([1, 0], dtype=uint8)
+    >>> _as_numeric(np.array([True, None, 2.5], dtype=object))
+    array([1. , nan, 2.5])
+    >>> _as_numeric(np.array(["1", None], dtype=object)).dtype
+    dtype('O')
+
+    """
+    if values.dtype == bool:
+        return values.astype(np.uint8)
+    if values.dtype == object:
+        import pandas as pd
+        missing = pd.isna(values)
+        present = values[~missing]
+        if all(isinstance(v, (bool, int, float, np.bool_, np.number)) for v in present):
+            numeric = np.full(values.shape, np.nan)
+            numeric[~missing] = present.astype(float)
+            return numeric
+    return values
 
 
 def matrix(
     data: Dataset | Mapping,
-    pipeline: DataPipeline,
     column_groups: Iterable[Iterable[str]]
 ) -> tuple[np.ndarray, ...]:
-    """Stack each group of (transformed) columns into a 2D numeric array."""
+    """Stack each group of columns into a 2D numeric array.
+
+    Transformed columns are looked up by their output names.
+
+    Boolean columns become 0/1. Missing values in boolean or numeric
+    columns, including nullable booleans, become NaN.
+
+    """
     blocks = ()
+    available = column_names(data)
     for columns in column_groups:
         arrays = []
         for column in columns:
-            column_name = get_transformed_column(column, data, pipeline)
-            values = data[column_name]
+            if column not in available:
+                raise KeyError(
+                    f"Column or Aspect transform {column} unavailable. "
+                    f"Available columns: {available}"
+                )
+            values = data[column]
             if len(values) == 0:
                 raise ValueError(f"No rows in dataset: {data}")
             try:
                 values = np.asarray(values)
                 if values.dtype == object:
                     values = np.stack(list(values))
-                values = values.reshape(len(values), -1)
+                values = _as_numeric(values.reshape(len(values), -1))
             except (TypeError, ValueError) as error:
-                raise ValueError(f"Column {column!r} is not a regular array: {data[column_name]}") from error
+                raise ValueError(f"Column {column!r} is not a regular array: {data[column]}") from error
             if not np.issubdtype(values.dtype, np.number):
                 raise TypeError(f"Column {column!r} must be numeric, got {values.dtype}")
             arrays.append(values)
