@@ -296,12 +296,10 @@ class Box:
 
     def _matrix(
         self, 
-        dataset: Dataset, 
-        pipeline: DataPipeline
+        dataset: Dataset
     ):
         return matrix(
             dataset,
-            pipeline,
             column_groups=(self.features, *self._target_columns),
         )
 
@@ -325,7 +323,7 @@ class Box:
             training=True,
         )
         self._training_identity = training_identity(pipeline)
-        X, *targets = self._matrix(training_data, pipeline)
+        X, *targets = self._matrix(training_data)
         y, censor = targets_and_censor(targets)
         if early_stopping_rounds is not None and not use_validation_for_fit:
             raise ValueError(
@@ -342,15 +340,12 @@ class Box:
                 )
 
             # Clone the fitted Aspect pipeline for validation.
-            validation_data, validation_pipeline = self.featurize(
+            validation_data, _ = self.featurize(
                 validation,
                 training=False,
             )
 
-            X_val, *val_targets = self._matrix(
-                validation_data,
-                validation_pipeline,
-            )
+            X_val, *val_targets = self._matrix(validation_data)
             fit_validation = (X_val, *targets_and_censor(val_targets))
 
         self.model.fit(
@@ -382,11 +377,9 @@ class Box:
             if self.pipeline.data_in is None:
                 raise ValueError("No training data or prediction data available")
 
-            if pipeline is None and self.pipeline.data_out is not None:
-                return (
-                    unwrap(self.pipeline.data_out).with_format(None),
-                    self.pipeline.clone(),
-                )
+            if pipeline is None:
+                # Featurized once, on first use, then reused.
+                return self.training_data, self.pipeline.clone()
 
             data = self.pipeline.data_in
 
@@ -488,7 +481,6 @@ class Box:
             batch_size=batch_size,
             fn_kwargs={
                 "model": self.model,
-                "pipeline": pipeline,
                 "prediction_column": prediction_column,
                 "column_groups": (
                     self.features,
@@ -556,7 +548,6 @@ class Box:
             fn_kwargs={
                 "model": self.model,
                 "column_groups": (self.features, self.target),
-                "pipeline": working_pipeline,
                 "prediction_column": prediction_column,
             },
             desc="Predicting",
@@ -570,12 +561,10 @@ class Box:
 
         (y_pred,) = matrix(
             predicted,
-            working_pipeline,
             (prediction_cols,),
         )
         y_true, *censor = matrix(
             predicted,
-            working_pipeline,
             self._target_columns,
         )
 

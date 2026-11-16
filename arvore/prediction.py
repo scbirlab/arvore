@@ -118,7 +118,6 @@ def predict_map_batch(
     *,
     model,
     column_groups: Iterable[Iterable[str]],
-    pipeline,
     prediction_column: str = DEFAULT_PREDICTION_COLUMN,
     kwargs: Mapping | None = None,
     scoring=None,
@@ -130,7 +129,6 @@ def predict_map_batch(
 
     (X,) = matrix(
         batch,
-        pipeline,
         column_groups=(feature_cols,),
     )
 

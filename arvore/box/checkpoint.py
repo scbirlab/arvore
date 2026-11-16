@@ -152,8 +152,11 @@ def load(
         )
     artefacts = manifest["artefacts"]
     config = manifest["config"]
+    # The checkpoint stores raw training data, so featurizing here would
+    # redo the whole training set. Box.training_data does it on first use.
     pipeline = DataPipeline.load(
         path / artefacts["training_data"],
+        skip_call=True,
         cache_dir=cache_dir,
     )
     box = cls(
