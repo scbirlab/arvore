@@ -20,7 +20,13 @@ def selected_rows(args: Namespace):
     from providence import DataResolver
 
     if args.data is not None:
-        return DataResolver(args.data).select_rows(args.start, args.stop).data
+        return DataResolver(
+            args.data, 
+            cache_dir=args.cache,
+        ).select_rows(
+            args.start, 
+            args.stop,
+        ).data
     if args.start is not None or args.stop is not None:
         raise ValueError("--start and --stop require --data")
     return None
