@@ -41,7 +41,6 @@ def feature_batches(box, *, batch_size):
 
         (X,) = matrix(
             batch,
-            box.pipeline,
             (box.features,),
         )
 
